@@ -1,0 +1,66 @@
+CÓMO COMPILAR ESTA APP EN TERMUX (paso a paso)
+================================================
+
+1) Descomprime este zip dentro de Termux, por ejemplo en:
+   /data/data/com.termux/files/home/CobaltWrapper
+
+   Si lo subiste a la carpeta Downloads del teléfono, puedes moverlo así:
+     termux-setup-storage
+     cd ~
+     unzip /sdcard/Download/CobaltWrapper.zip -d ~/CobaltWrapper
+     cd ~/CobaltWrapper
+
+2) Instala lo necesario (una sola vez):
+     pkg update && pkg upgrade -y
+     pkg install -y openjdk-17 wget unzip gradle
+
+3) Instala el Android SDK (una sola vez):
+     mkdir -p ~/android-sdk/cmdline-tools
+     cd ~/android-sdk/cmdline-tools
+     wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+     unzip commandlinetools-linux-11076708_latest.zip
+     mv cmdline-tools latest
+
+     export ANDROID_HOME=$HOME/android-sdk
+     export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+
+     yes | sdkmanager --licenses
+     sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+   IMPORTANTE: agrega estas dos líneas al final de tu archivo ~/.bashrc
+   para no tener que escribirlas cada vez que abras Termux:
+     export ANDROID_HOME=$HOME/android-sdk
+     export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+
+4) Compila el APK:
+     cd ~/CobaltWrapper
+     gradle assembleDebug
+
+   El proceso puede tardar varios minutos la primera vez (descarga dependencias).
+
+5) El APK generado queda en:
+     app/build/outputs/apk/debug/app-debug.apk
+
+   Instálalo directamente con:
+     termux-open app/build/outputs/apk/debug/app-debug.apk
+
+   Android te pedirá permiso para instalar apps de "origen desconocido" la
+   primera vez, es normal (es un APK de depuración, no de Play Store).
+
+QUÉ HACE ESTA APP
+==================
+- Es un WebView que carga https://cobalt.meowing.de
+- Detecta cuando descargas un archivo desde la página y lo guarda en la
+  carpeta Descargas del teléfono usando el gestor de descargas de Android.
+- Aparece como opción al usar el botón "Compartir" de otras apps (por
+  ejemplo, compartir un video de YouTube o TikTok). Al compartir, la app
+  se abre, carga cobalt y pega automáticamente el enlace en la caja de
+  texto de la página.
+
+SI ALGO FALLA
+==============
+- Si "gradle assembleDebug" da error de versiones, dime el mensaje exacto
+  y lo resolvemos.
+- Si el pegado automático del enlace no funciona, es porque cobalt cambió
+  el diseño de su página (el selector del campo de texto ya no coincide).
+  Se puede ajustar el método injectSharedText() en MainActivity.java.
