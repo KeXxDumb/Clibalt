@@ -94,8 +94,22 @@ public class MainActivity extends AppCompatActivity {
         "  addHistoryButton();" +
         "  attachPasteListener();" +
         "  patchVideos();" +
-        "  setInterval(function() { addHistoryButton(); attachPasteListener(); patchVideos(); }, 1000);" +
+        "  reportThemeColor();" +
+        "  setInterval(function() { addHistoryButton(); attachPasteListener(); patchVideos(); reportThemeColor(); }, 1000);" +
         "})();";
+
+    // Detecta el color de fondo real que cobalt está pintando (sigue su tema
+    // auto/light/dark tal cual esté configurado, o el modo del sistema si
+    // cobalt está en "auto") y lo reporta a Android para sincronizar las
+    // barras de estado y navegación.
+    private static final String THEME_DETECT_JS =
+        "function reportThemeColor() {" +
+        "  var bg = window.getComputedStyle(document.body).backgroundColor;" +
+        "  if (bg && bg !== window.__lastReportedBg) {" +
+        "    window.__lastReportedBg = bg;" +
+        "    AndroidBridge.onThemeColor(bg);" +
+        "  }" +
+        "}";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -138,7 +152,7 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 swipeRefresh.setRefreshing(false);
-                view.evaluateJavascript(INJECTED_JS, null);
+                view.evaluateJavascript(THEME_DETECT_JS + INJECTED_JS, null);
                 if (pendingSharedText != null) {
                     injectSharedText(pendingSharedText);
                     historyStore.add(pendingSharedText, -1);
@@ -287,7 +301,7 @@ public class MainActivity extends AppCompatActivity {
             "      el.dispatchEvent(new Event('change', { bubbles: true }));" +
             "      clearInterval(timer);" +
             "    }" +
-            "    if (attempts > 20) clearInterval(timer);" +
+            "    if (attempts > 100) clearInterval(timer);" +
             "  }, 300);" +
             "})();";
         webView.evaluateJavascript(js, null);
@@ -314,6 +328,53 @@ public class MainActivity extends AppCompatActivity {
             lastKnownLink = url;
             runOnUiThread(() -> historyStore.add(url, -1));
         }
+
+        @JavascriptInterface
+        public void onThemeColor(String rgbColor) {
+            runOnUiThread(() -> applyThemeColor(rgbColor));
+        }
+    }
+
+    // Sincroniza la barra de estado y de navegación con el color real que
+    // cobalt está pintando, y ajusta el color de los íconos del sistema
+    // para mantener buen contraste en cualquier tema (auto/light/dark).
+    private void applyThemeColor(String rgbColor) {
+        try {
+            int color = parseCssColor(rgbColor);
+            getWindow().setStatusBarColor(color);
+            getWindow().setNavigationBarColor(color);
+
+            double luminance = (0.299 * android.graphics.Color.red(color)
+                    + 0.587 * android.graphics.Color.green(color)
+                    + 0.114 * android.graphics.Color.blue(color)) / 255.0;
+            boolean lightBackground = luminance > 0.5;
+
+            View decor = getWindow().getDecorView();
+            int flags = decor.getSystemUiVisibility();
+            if (lightBackground) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                }
+            } else {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                }
+            }
+            decor.setSystemUiVisibility(flags);
+        } catch (Exception ignored) { }
+    }
+
+    // Convierte "rgb(20, 20, 20)" o "rgba(20, 20, 20, 1)" (lo que devuelve
+    // getComputedStyle) en un color de Android.
+    private int parseCssColor(String rgb) {
+        String nums = rgb.substring(rgb.indexOf('(') + 1, rgb.indexOf(')'));
+        String[] parts = nums.split(",");
+        int r = (int) Float.parseFloat(parts[0].trim());
+        int g = (int) Float.parseFloat(parts[1].trim());
+        int b = (int) Float.parseFloat(parts[2].trim());
+        return android.graphics.Color.rgb(r, g, b);
     }
 
     private void generateThumbnailForDownload(long downloadId) {
