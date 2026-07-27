@@ -224,7 +224,7 @@ public class MainActivity extends AppCompatActivity {
                 probeWebView.setWebViewClient(new WebViewClient() {
                     @Override
                     public boolean shouldOverrideUrlLoading(WebView probeView, WebResourceRequest request) {
-                        startDownload(request.getUrl().toString());
+                        startDownload(request.getUrl().toString(), webView.getSettings().getUserAgentString());
                         probeView.destroy();
                         return true;
                     }
@@ -237,7 +237,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> startDownload(url));
+        webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> startDownload(url, userAgent));
     }
 
     /**
@@ -246,23 +246,33 @@ public class MainActivity extends AppCompatActivity {
      * que una excepción tumbe la app: los esquemas no soportados por
      * DownloadManager (blob:, data:) se manejan aparte.
      */
-    private void startDownload(String url) {
+    private void startDownload(String url, String userAgent) {
         try {
             if (url.startsWith("blob:")) {
                 startBlobDownload(url);
             } else if (url.startsWith("data:")) {
                 startDataUriDownload(url);
             } else {
-                startHttpDownload(url);
+                startHttpDownload(url, userAgent);
             }
         } catch (Exception e) {
             Snackbar.make(rootLayout, "Couldn't start this download", Snackbar.LENGTH_LONG).show();
         }
     }
 
-    private void startHttpDownload(String url) {
+    private void startHttpDownload(String url, String userAgent) {
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+
+        // DownloadManager hace una petición de red aparte, sin la sesión de
+        // la página. Si cobalt entrega enlaces atados a cookies/sesión (algo
+        // común en colas de procesamiento), sin esto la descarga es
+        // rechazada por el servidor y falla en silencio.
+        String cookie = android.webkit.CookieManager.getInstance().getCookie(url);
+        if (cookie != null) request.addRequestHeader("cookie", cookie);
+        if (userAgent != null) request.addRequestHeader("User-Agent", userAgent);
+        request.addRequestHeader("Referer", COBALT_URL);
+
         String fileName = Uri.parse(url).getLastPathSegment();
         if (fileName == null || fileName.isEmpty()) fileName = "cobalt_download";
         request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
@@ -392,14 +402,20 @@ public class MainActivity extends AppCompatActivity {
                 if (cursor == null) return;
 
                 int status = -1;
+                int reason = -1;
                 if (cursor.moveToFirst()) {
                     int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
                     if (statusIdx != -1) status = cursor.getInt(statusIdx);
+                    int reasonIdx = cursor.getColumnIndex(DownloadManager.COLUMN_REASON);
+                    if (reasonIdx != -1) reason = cursor.getInt(reasonIdx);
                 }
                 cursor.close();
 
                 if (status != DownloadManager.STATUS_SUCCESSFUL) {
                     historyStore.markFailed(downloadId);
+                    int finalReason = reason;
+                    runOnUiThread(() -> Snackbar.make(rootLayout,
+                            "Download failed (reason " + finalReason + ")", Snackbar.LENGTH_LONG).show());
                     return;
                 }
 
