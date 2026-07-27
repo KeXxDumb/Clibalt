@@ -11,6 +11,8 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.google.android.material.card.MaterialCardView;
+
 import java.io.File;
 import java.util.List;
 
@@ -40,17 +42,41 @@ public class HistoryAdapter extends RecyclerView.Adapter<HistoryAdapter.ViewHold
     @Override
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         HistoryEntry entry = items.get(position);
+
         holder.url.setText(entry.url);
-        holder.time.setText(entry.time);
+        holder.url.setTextColor(ThemeState.textPrimary);
+
+        holder.card.setCardBackgroundColor(ThemeState.surface);
+        holder.card.setStrokeColor(ThemeState.divider);
+
+        switch (entry.status) {
+            case HistoryEntry.STATUS_DOWNLOADING:
+                holder.time.setText("Downloading…");
+                holder.time.setTextColor(0xFF1E88E5);
+                break;
+            case HistoryEntry.STATUS_FAILED:
+                holder.time.setText("Failed · tap to retry");
+                holder.time.setTextColor(0xFFD32F2F);
+                break;
+            default:
+                holder.time.setText(entry.time);
+                holder.time.setTextColor(ThemeState.textSecondary);
+                break;
+        }
 
         if (entry.thumbPath != null && new File(entry.thumbPath).exists()) {
             holder.thumb.setPadding(0, 0, 0, 0);
             holder.thumb.setImageBitmap(BitmapFactory.decodeFile(entry.thumbPath));
+            holder.thumb.setBackgroundColor(ThemeState.background);
         } else {
             int pad = (int) (14 * holder.itemView.getResources().getDisplayMetrics().density);
             holder.thumb.setPadding(pad, pad, pad, pad);
             holder.thumb.setImageResource(R.drawable.ic_link);
+            holder.thumb.setBackgroundColor(ThemeState.background);
+            holder.thumb.setColorFilter(ThemeState.textSecondary);
         }
+
+        holder.deleteButton.setColorFilter(ThemeState.textSecondary);
 
         holder.itemView.setOnClickListener(v -> listener.onItemClick(entry));
         holder.deleteButton.setOnClickListener(v -> listener.onDeleteClick(holder.getBindingAdapterPosition()));
@@ -62,6 +88,7 @@ public class HistoryAdapter extends RecyclerView.Adapter<HistoryAdapter.ViewHold
     }
 
     static class ViewHolder extends RecyclerView.ViewHolder {
+        MaterialCardView card;
         ImageView thumb;
         TextView url;
         TextView time;
@@ -69,6 +96,7 @@ public class HistoryAdapter extends RecyclerView.Adapter<HistoryAdapter.ViewHold
 
         ViewHolder(View itemView) {
             super(itemView);
+            card = (MaterialCardView) itemView;
             thumb = itemView.findViewById(R.id.thumb);
             url = itemView.findViewById(R.id.url);
             time = itemView.findViewById(R.id.time);

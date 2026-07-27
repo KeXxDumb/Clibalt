@@ -6,6 +6,7 @@
     android:paddingBottom="16dp">
 
     <View
+        android:id="@+id/drag_handle"
         android:layout_width="36dp"
         android:layout_height="4dp"
         android:layout_gravity="center_horizontal"
@@ -23,6 +24,7 @@
         android:paddingBottom="4dp">
 
         <TextView
+            android:id="@+id/sheet_title"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
@@ -59,11 +61,13 @@
         android:visibility="gone">
 
         <ImageView
+            android:id="@+id/empty_icon"
             android:layout_width="64dp"
             android:layout_height="64dp"
             android:src="@drawable/ic_history_empty"/>
 
         <TextView
+            android:id="@+id/empty_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
@@ -73,6 +77,7 @@
             android:textColor="@color/text_primary"/>
 
         <TextView
+            android:id="@+id/empty_subtitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"

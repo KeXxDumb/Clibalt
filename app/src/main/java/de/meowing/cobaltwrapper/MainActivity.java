@@ -5,14 +5,19 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.app.DownloadManager;
+import android.content.ContentValues;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Message;
+import android.provider.MediaStore;
+import android.util.Base64;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -32,6 +37,7 @@ import com.google.android.material.snackbar.Snackbar;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -47,14 +53,17 @@ public class MainActivity extends AppCompatActivity {
     private String pendingSharedText = null;
     private String lastKnownLink = null;
 
+    // Id sintético de la descarga por blob que está en curso (solo una a la vez).
+    private long pendingBlobId = 0;
+
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
 
     private BroadcastReceiver downloadCompleteReceiver;
 
     // JS inyectado en cada página: agrega el botón "history" en la barra de cobalt,
-    // escucha pegados manuales en el campo de texto, y limpia los controles nativos
-    // de descarga/compartir de cualquier <video>.
+    // escucha pegados manuales en el campo de texto, limpia los controles nativos
+    // de descarga/compartir de cualquier <video>, y reporta el color de tema real.
     private static final String INJECTED_JS =
         "(function() {" +
         "  function patchVideos() {" +
@@ -101,7 +110,7 @@ public class MainActivity extends AppCompatActivity {
     // Detecta el color de fondo real que cobalt está pintando (sigue su tema
     // auto/light/dark tal cual esté configurado, o el modo del sistema si
     // cobalt está en "auto") y lo reporta a Android para sincronizar las
-    // barras de estado y navegación.
+    // barras de estado/navegación y el propio historial.
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
         "  var bg = window.getComputedStyle(document.body).backgroundColor;" +
@@ -124,6 +133,14 @@ public class MainActivity extends AppCompatActivity {
         swipeRefresh = findViewById(R.id.swipe_refresh);
         progressIndicator = findViewById(R.id.progress_indicator);
         fullscreenContainer = findViewById(R.id.fullscreen_container);
+
+        // Aplica de inmediato el último tema conocido (guardado de una sesión
+        // anterior) para que la pantalla de carga no "flashee" en claro si
+        // cobalt estaba en oscuro.
+        ThemeState.apply(historyStore.loadIsDark());
+        applySystemBarsFromThemeState();
+        rootLayout.setBackgroundColor(ThemeState.background);
+        webView.setBackgroundColor(ThemeState.background);
 
         setupWebView();
 
@@ -154,8 +171,8 @@ public class MainActivity extends AppCompatActivity {
                 swipeRefresh.setRefreshing(false);
                 view.evaluateJavascript(THEME_DETECT_JS + INJECTED_JS, null);
                 if (pendingSharedText != null) {
+                    lastKnownLink = pendingSharedText;
                     injectSharedText(pendingSharedText);
-                    historyStore.add(pendingSharedText, -1);
                     Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
                     pendingSharedText = null;
                 }
@@ -223,16 +240,131 @@ public class MainActivity extends AppCompatActivity {
         webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> startDownload(url));
     }
 
+    /**
+     * Punto único de entrada para cualquier intento de descarga, sea cual sea
+     * el origen (DownloadListener o window.open interceptado). Nunca deja
+     * que una excepción tumbe la app: los esquemas no soportados por
+     * DownloadManager (blob:, data:) se manejan aparte.
+     */
     private void startDownload(String url) {
+        try {
+            if (url.startsWith("blob:")) {
+                startBlobDownload(url);
+            } else if (url.startsWith("data:")) {
+                startDataUriDownload(url);
+            } else {
+                startHttpDownload(url);
+            }
+        } catch (Exception e) {
+            Snackbar.make(rootLayout, "Couldn't start this download", Snackbar.LENGTH_LONG).show();
+        }
+    }
+
+    private void startHttpDownload(String url) {
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
         String fileName = Uri.parse(url).getLastPathSegment();
+        if (fileName == null || fileName.isEmpty()) fileName = "cobalt_download";
         request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
         long downloadId = dm.enqueue(request);
 
-        historyStore.add(lastKnownLink != null ? lastKnownLink : fileName, downloadId);
+        historyStore.startEntry(lastKnownLink != null ? lastKnownLink : fileName, downloadId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+    }
+
+    // Algunos archivos (ej. gifs generados en el momento) llegan como blob:
+    // en vez de una URL http normal. DownloadManager no puede leerlos
+    // directamente y antes esto crasheaba la app; ahora se leen desde la
+    // propia página vía JS y se guardan manualmente.
+    private void startBlobDownload(String blobUrl) {
+        pendingBlobId = HistoryStore.newSyntheticId();
+        historyStore.startEntry(lastKnownLink != null ? lastKnownLink : "cobalt file", pendingBlobId);
+        Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+
+        String escapedUrl = blobUrl.replace("\\", "\\\\").replace("'", "\\'");
+        String js =
+            "(function() {" +
+            "  fetch('" + escapedUrl + "').then(function(res) { return res.blob(); }).then(function(blob) {" +
+            "    var reader = new FileReader();" +
+            "    reader.onloadend = function() {" +
+            "      var base64 = reader.result.split(',')[1];" +
+            "      AndroidBridge.onBlobReady(base64, blob.type || 'application/octet-stream');" +
+            "    };" +
+            "    reader.readAsDataURL(blob);" +
+            "  }).catch(function(e) { AndroidBridge.onBlobError(String(e)); });" +
+            "})();";
+        webView.evaluateJavascript(js, null);
+    }
+
+    private void startDataUriDownload(String dataUri) {
+        long id = HistoryStore.newSyntheticId();
+        historyStore.startEntry(lastKnownLink != null ? lastKnownLink : "cobalt file", id);
+        Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+
+        try {
+            String header = dataUri.substring(5, dataUri.indexOf(','));
+            String mimeType = header.contains(";") ? header.substring(0, header.indexOf(';')) : header;
+            String base64Data = dataUri.substring(dataUri.indexOf(',') + 1);
+            byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+            saveDownloadedBytes(id, bytes, mimeType);
+        } catch (Exception e) {
+            historyStore.markFailed(id);
+            Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Escribe los bytes ya descargados (blob/data URI) en la carpeta pública de Descargas. */
+    private void saveDownloadedBytes(long entryId, byte[] bytes, String mimeType) {
+        new Thread(() -> {
+            try {
+                String extension = guessExtension(mimeType);
+                String fileName = "cobalt_" + System.currentTimeMillis() + extension;
+                Uri resultUri;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                    resultUri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (resultUri == null) throw new Exception("MediaStore insert failed");
+                    OutputStream out = getContentResolver().openOutputStream(resultUri);
+                    if (out == null) throw new Exception("Couldn't open output stream");
+                    out.write(bytes);
+                    out.close();
+                } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    File file = new File(dir, fileName);
+                    FileOutputStream fos = new FileOutputStream(file);
+                    fos.write(bytes);
+                    fos.close();
+                    resultUri = Uri.fromFile(file);
+                }
+
+                String thumbPath = null;
+                if (mimeType != null && mimeType.startsWith("image/")) {
+                    Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    if (bitmap != null) thumbPath = saveThumbToDisk(bitmap, entryId);
+                }
+
+                historyStore.markCompleted(entryId, thumbPath, resultUri.toString(), mimeType);
+                runOnUiThread(() -> Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show());
+            } catch (Exception e) {
+                historyStore.markFailed(entryId);
+                runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show());
+            }
+        }).start();
+    }
+
+    private String guessExtension(String mimeType) {
+        if (mimeType == null) return "";
+        if (mimeType.contains("gif")) return ".gif";
+        if (mimeType.contains("png")) return ".png";
+        if (mimeType.contains("jpeg") || mimeType.contains("jpg")) return ".jpg";
+        if (mimeType.contains("mp4")) return ".mp4";
+        if (mimeType.contains("webm")) return ".webm";
+        if (mimeType.contains("mp3") || mimeType.contains("mpeg")) return ".mp3";
+        return "";
     }
 
     private void registerDownloadCompleteReceiver() {
@@ -240,7 +372,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onReceive(Context context, Intent intent) {
                 long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                if (id != -1) generateThumbnailForDownload(id);
+                if (id != -1) handleDownloadComplete(id);
             }
         };
         IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
@@ -249,6 +381,79 @@ public class MainActivity extends AppCompatActivity {
         } else {
             registerReceiver(downloadCompleteReceiver, filter);
         }
+    }
+
+    private void handleDownloadComplete(long downloadId) {
+        new Thread(() -> {
+            try {
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+                Cursor cursor = dm.query(query);
+                if (cursor == null) return;
+
+                int status = -1;
+                if (cursor.moveToFirst()) {
+                    int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                    if (statusIdx != -1) status = cursor.getInt(statusIdx);
+                }
+                cursor.close();
+
+                if (status != DownloadManager.STATUS_SUCCESSFUL) {
+                    historyStore.markFailed(downloadId);
+                    return;
+                }
+
+                Uri fileUri = dm.getUriForDownloadedFile(downloadId);
+                String mime = dm.getMimeTypeForDownloadedFile(downloadId);
+                String thumbPath = generateThumbnail(downloadId, fileUri, mime);
+
+                historyStore.markCompleted(downloadId, thumbPath, fileUri != null ? fileUri.toString() : null, mime);
+            } catch (Exception e) {
+                historyStore.markFailed(downloadId);
+            }
+        }).start();
+    }
+
+    private String generateThumbnail(long downloadId, Uri fileUri, String mime) {
+        if (fileUri == null) return null;
+        try {
+            Bitmap thumb = null;
+
+            if (mime != null && mime.startsWith("video/")) {
+                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                retriever.setDataSource(this, fileUri);
+                thumb = retriever.getFrameAtTime(1_000_000);
+                retriever.release();
+            } else if (mime != null && mime.startsWith("audio/")) {
+                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                retriever.setDataSource(this, fileUri);
+                byte[] art = retriever.getEmbeddedPicture();
+                if (art != null) thumb = BitmapFactory.decodeByteArray(art, 0, art.length);
+                retriever.release();
+            } else if (mime != null && mime.startsWith("image/")) {
+                InputStream is = getContentResolver().openInputStream(fileUri);
+                if (is != null) {
+                    thumb = BitmapFactory.decodeStream(is);
+                    is.close();
+                }
+            }
+
+            return thumb != null ? saveThumbToDisk(thumb, downloadId) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String saveThumbToDisk(Bitmap bitmap, long id) throws Exception {
+        File dir = new File(getFilesDir(), "thumbs");
+        if (!dir.exists()) dir.mkdirs();
+        File out = new File(dir, "thumb_" + id + ".jpg");
+
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, 200, 200, true);
+        FileOutputStream fos = new FileOutputStream(out);
+        scaled.compress(Bitmap.CompressFormat.JPEG, 85, fos);
+        fos.close();
+        return out.getAbsolutePath();
     }
 
     @Override
@@ -267,8 +472,8 @@ public class MainActivity extends AppCompatActivity {
         setIntent(intent);
         String shared = extractSharedText(intent);
         if (shared != null) {
+            lastKnownLink = shared;
             injectSharedText(shared);
-            historyStore.add(shared, -1);
             Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
         }
     }
@@ -283,8 +488,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void injectSharedText(String text) {
         String escaped = text.replace("\\", "\\\\").replace("'", "\\'");
-        // Reintenta durante unos segundos por si el campo de texto de cobalt
-        // todavía no está montado en el momento en que termina de cargar la página.
+        // Reintenta hasta 30 segundos por si el campo de texto de cobalt
+        // todavía no está montado (conexión lenta) en el momento del intento.
         String js =
             "(function() {" +
             "  var value = '" + escaped + "';" +
@@ -309,12 +514,26 @@ public class MainActivity extends AppCompatActivity {
 
     private void showHistorySheet() {
         HistoryBottomSheet sheet = new HistoryBottomSheet();
-        sheet.setListener(this::injectSharedTextFromHistory);
-        sheet.show(getSupportFragmentManager(), "history");
-    }
+        sheet.setListener(new HistoryBottomSheet.OnHistoryActionListener() {
+            @Override
+            public void onLinkSelected(String url) {
+                injectSharedText(url);
+            }
 
-    private void injectSharedTextFromHistory(String url) {
-        injectSharedText(url);
+            @Override
+            public void onOpenFile(String fileUri, String mimeType) {
+                try {
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.setDataAndType(Uri.parse(fileUri), mimeType != null ? mimeType : "*/*");
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception e) {
+                    Snackbar.make(rootLayout, "Couldn't open this file", Snackbar.LENGTH_SHORT).show();
+                }
+            }
+        });
+        sheet.show(getSupportFragmentManager(), "history");
     }
 
     public class WebAppInterface {
@@ -326,28 +545,52 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onLinkEntered(String url) {
             lastKnownLink = url;
-            runOnUiThread(() -> historyStore.add(url, -1));
         }
 
         @JavascriptInterface
         public void onThemeColor(String rgbColor) {
             runOnUiThread(() -> applyThemeColor(rgbColor));
         }
+
+        @JavascriptInterface
+        public void onBlobReady(String base64Data, String mimeType) {
+            new Thread(() -> {
+                try {
+                    byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                    saveDownloadedBytes(pendingBlobId, bytes, mimeType);
+                } catch (Exception e) {
+                    historyStore.markFailed(pendingBlobId);
+                    runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show());
+                }
+            }).start();
+        }
+
+        @JavascriptInterface
+        public void onBlobError(String message) {
+            historyStore.markFailed(pendingBlobId);
+            runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show());
+        }
     }
 
     // Sincroniza la barra de estado y de navegación con el color real que
     // cobalt está pintando, y ajusta el color de los íconos del sistema
     // para mantener buen contraste en cualquier tema (auto/light/dark).
+    // También guarda el resultado para que el próximo arranque de la app
+    // ya abra con el tema correcto desde el primer fotograma.
     private void applyThemeColor(String rgbColor) {
         try {
             int color = parseCssColor(rgbColor);
+
+            double luminance = (0.299 * Color.red(color)
+                    + 0.587 * Color.green(color)
+                    + 0.114 * Color.blue(color)) / 255.0;
+            boolean lightBackground = luminance > 0.5;
+
+            ThemeState.apply(!lightBackground);
+            historyStore.saveIsDark(!lightBackground);
+
             getWindow().setStatusBarColor(color);
             getWindow().setNavigationBarColor(color);
-
-            double luminance = (0.299 * android.graphics.Color.red(color)
-                    + 0.587 * android.graphics.Color.green(color)
-                    + 0.114 * android.graphics.Color.blue(color)) / 255.0;
-            boolean lightBackground = luminance > 0.5;
 
             View decor = getWindow().getDecorView();
             int flags = decor.getSystemUiVisibility();
@@ -363,7 +606,31 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
             decor.setSystemUiVisibility(flags);
+
+            rootLayout.setBackgroundColor(color);
+            webView.setBackgroundColor(color);
         } catch (Exception ignored) { }
+    }
+
+    /** Reaplica el color de barras cacheado (usado al arrancar, antes de que la página reporte el real). */
+    private void applySystemBarsFromThemeState() {
+        getWindow().setStatusBarColor(ThemeState.background);
+        getWindow().setNavigationBarColor(ThemeState.background);
+
+        View decor = getWindow().getDecorView();
+        int flags = decor.getSystemUiVisibility();
+        if (!ThemeState.isDark) {
+            flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+        } else {
+            flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+        }
+        decor.setSystemUiVisibility(flags);
     }
 
     // Convierte "rgb(20, 20, 20)" o "rgba(20, 20, 20, 1)" (lo que devuelve
@@ -374,56 +641,7 @@ public class MainActivity extends AppCompatActivity {
         int r = (int) Float.parseFloat(parts[0].trim());
         int g = (int) Float.parseFloat(parts[1].trim());
         int b = (int) Float.parseFloat(parts[2].trim());
-        return android.graphics.Color.rgb(r, g, b);
-    }
-
-    private void generateThumbnailForDownload(long downloadId) {
-        new Thread(() -> {
-            try {
-                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                Uri fileUri = dm.getUriForDownloadedFile(downloadId);
-                if (fileUri == null) return;
-
-                String mime = dm.getMimeTypeForDownloadedFile(downloadId);
-                Bitmap thumb = null;
-
-                if (mime != null && mime.startsWith("video/")) {
-                    MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                    retriever.setDataSource(this, fileUri);
-                    thumb = retriever.getFrameAtTime(1_000_000);
-                    retriever.release();
-                } else if (mime != null && mime.startsWith("audio/")) {
-                    MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-                    retriever.setDataSource(this, fileUri);
-                    byte[] art = retriever.getEmbeddedPicture();
-                    if (art != null) thumb = BitmapFactory.decodeByteArray(art, 0, art.length);
-                    retriever.release();
-                } else if (mime != null && mime.startsWith("image/")) {
-                    InputStream is = getContentResolver().openInputStream(fileUri);
-                    if (is != null) {
-                        thumb = BitmapFactory.decodeStream(is);
-                        is.close();
-                    }
-                }
-
-                if (thumb != null) {
-                    String path = saveThumbToDisk(thumb, downloadId);
-                    historyStore.attachThumb(downloadId, path);
-                }
-            } catch (Exception ignored) { }
-        }).start();
-    }
-
-    private String saveThumbToDisk(Bitmap bitmap, long downloadId) throws Exception {
-        File dir = new File(getFilesDir(), "thumbs");
-        if (!dir.exists()) dir.mkdirs();
-        File out = new File(dir, "thumb_" + downloadId + ".jpg");
-
-        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, 200, 200, true);
-        FileOutputStream fos = new FileOutputStream(out);
-        scaled.compress(Bitmap.CompressFormat.JPEG, 85, fos);
-        fos.close();
-        return out.getAbsolutePath();
+        return Color.rgb(r, g, b);
     }
 
     @Override

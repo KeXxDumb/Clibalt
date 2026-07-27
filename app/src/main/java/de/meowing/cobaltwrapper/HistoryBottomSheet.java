@@ -1,9 +1,13 @@
 package de.meowing.cobaltwrapper;
 
+import android.graphics.drawable.ColorDrawable;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageView;
+import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -11,6 +15,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment;
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.snackbar.Snackbar;
 
@@ -21,6 +26,7 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
 
     public interface OnHistoryActionListener {
         void onLinkSelected(String url);
+        void onOpenFile(String fileUri, String mimeType);
     }
 
     private OnHistoryActionListener listener;
@@ -44,6 +50,8 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
+        applyTheme(view);
+
         store = new HistoryStore(requireContext());
         entries = new ArrayList<>(store.loadAll());
 
@@ -53,7 +61,11 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
         adapter = new HistoryAdapter(entries, new HistoryAdapter.Listener() {
             @Override
             public void onItemClick(HistoryEntry entry) {
-                if (listener != null) listener.onLinkSelected(entry.url);
+                if (HistoryEntry.STATUS_COMPLETED.equals(entry.status) && entry.fileUri != null) {
+                    if (listener != null) listener.onOpenFile(entry.fileUri, entry.mimeType);
+                } else {
+                    if (listener != null) listener.onLinkSelected(entry.url);
+                }
                 dismiss();
             }
 
@@ -74,6 +86,34 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
         view.findViewById(R.id.clear_all_button).setOnClickListener(v -> confirmClearAll(view));
 
         updateEmptyState();
+    }
+
+    private void applyTheme(View view) {
+        view.setBackgroundColor(ThemeState.surface);
+
+        if (getDialog() != null && getDialog().getWindow() != null) {
+            getDialog().getWindow().setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
+        }
+
+        View dragHandle = view.findViewById(R.id.drag_handle);
+        if (dragHandle != null) dragHandle.setBackgroundColor(ThemeState.divider);
+
+        TextView title = view.findViewById(R.id.sheet_title);
+        if (title != null) title.setTextColor(ThemeState.textPrimary);
+
+        MaterialButton clearAll = view.findViewById(R.id.clear_all_button);
+        if (clearAll != null) clearAll.setTextColor(0xFFD32F2F);
+
+        View emptyIcon = view.findViewById(R.id.empty_icon);
+        if (emptyIcon instanceof ImageView) {
+            ((ImageView) emptyIcon).setColorFilter(ThemeState.divider);
+        }
+
+        TextView emptyTitle = view.findViewById(R.id.empty_title);
+        if (emptyTitle != null) emptyTitle.setTextColor(ThemeState.textPrimary);
+
+        TextView emptySubtitle = view.findViewById(R.id.empty_subtitle);
+        if (emptySubtitle != null) emptySubtitle.setTextColor(ThemeState.textSecondary);
     }
 
     private void confirmClearAll(View anchor) {
