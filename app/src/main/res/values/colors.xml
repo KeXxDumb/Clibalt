@@ -1,3 +1,10 @@
 <resources>
-    <color name="page_background">#f4f4f4</color>
+    <color name="page_background">#F4F4F4</color>
+    <color name="brand_primary">#1E88E5</color>
+    <color name="brand_primary_dark">#1565C0</color>
+    <color name="text_primary">#1A1A1A</color>
+    <color name="text_secondary">#767676</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="divider">#E0E0E0</color>
+    <color name="danger">#D32F2F</color>
 </resources>

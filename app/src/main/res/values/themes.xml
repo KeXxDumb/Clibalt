@@ -1,0 +1,31 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        Tema de arranque: usa la librería oficial androidx.core.splashscreen
+        para mostrar el ícono de la app sobre el color de fondo mientras carga,
+        de forma consistente en todas las versiones de Android (incluida la
+        "Splash Screen API" obligatoria desde Android 12).
+    -->
+    <style name="Theme.CobaltWrapper.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/page_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.CobaltWrapper</item>
+    </style>
+
+    <!-- Tema real de la app, una vez terminado el splash screen -->
+    <style name="Theme.CobaltWrapper" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">@color/brand_primary</item>
+        <item name="colorPrimaryDark">@color/brand_primary_dark</item>
+        <item name="colorAccent">@color/brand_primary</item>
+        <item name="android:windowBackground">@color/page_background</item>
+        <item name="android:statusBarColor">@color/page_background</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">true</item>
+        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">true</item>
+    </style>
+    <style name="RoundedThumbnail" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">10dp</item>
+    </style>
+
+</resources>
