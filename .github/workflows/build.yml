@@ -16,8 +16,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Generar Gradle wrapper con versión compatible
+        run: gradle wrapper --gradle-version 8.4
+
       - name: Compilar APK
-        run: gradle assembleDebug
+        run: ./gradlew assembleDebug
 
       - name: Subir APK como artefacto
         uses: actions/upload-artifact@v4
