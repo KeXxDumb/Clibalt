@@ -109,6 +109,10 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Se refuerza por código: algunos fabricantes ignoran el color
+        // declarado solo en el XML del tema.
+        getWindow().setStatusBarColor(getColor(R.color.page_background));
+
         webView = findViewById(R.id.webview);
         loadingSpinner = findViewById(R.id.loading_spinner);
         fullscreenContainer = findViewById(R.id.fullscreen_container);
@@ -394,9 +398,9 @@ public class MainActivity extends Activity {
 
         if (entries.isEmpty()) {
             new AlertDialog.Builder(this)
-                    .setTitle("Historial")
-                    .setMessage("Todavía no hay enlaces registrados.")
-                    .setPositiveButton("Cerrar", null)
+                    .setTitle("History")
+                    .setMessage("No links registered yet.")
+                    .setPositiveButton("Close", null)
                     .show();
             return;
         }
@@ -405,10 +409,10 @@ public class MainActivity extends Activity {
         listView.setAdapter(new HistoryAdapter(entries));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Historial de enlaces")
+                .setTitle("Link history")
                 .setView(listView)
-                .setNegativeButton("Borrar historial", (d, w) -> clearHistory())
-                .setPositiveButton("Cerrar", null)
+                .setNegativeButton("Clear history", (d, w) -> clearHistory())
+                .setPositiveButton("Close", null)
                 .create();
 
         listView.setOnItemClickListener((parent, view, position, id) -> {
