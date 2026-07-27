@@ -102,6 +102,18 @@ public class MainActivity extends AppCompatActivity {
         "  }" +
         "  addHistoryButton();" +
         "  attachPasteListener();" +
+        "  function patchBlobRegistry() {" +
+        "    if (window.__blobPatchInstalled) return;" +
+        "    window.__blobPatchInstalled = true;" +
+        "    window.__cobaltBlobs = {};" +
+        "    var origCreate = URL.createObjectURL.bind(URL);" +
+        "    URL.createObjectURL = function(blob) {" +
+        "      var url = origCreate(blob);" +
+        "      window.__cobaltBlobs[url] = blob;" +
+        "      return url;" +
+        "    };" +
+        "  }" +
+        "  patchBlobRegistry();" +
         "  patchVideos();" +
         "  reportThemeColor();" +
         "  setInterval(function() { addHistoryButton(); attachPasteListener(); patchVideos(); reportThemeColor(); }, 1000);" +
@@ -292,17 +304,23 @@ public class MainActivity extends AppCompatActivity {
         historyStore.startEntry(lastKnownLink != null ? lastKnownLink : "cobalt file", pendingBlobId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
 
+        // No volvemos a pedir la URL por red (el archivo puede no existir en
+        // ningún servidor, como pasa con los gifs generados por
+        // "local-processing" de cobalt). En vez de eso, leemos el Blob real
+        // que quedó guardado en memoria cuando se creó, vía el registro que
+        // instalamos en patchBlobRegistry().
         String escapedUrl = blobUrl.replace("\\", "\\\\").replace("'", "\\'");
         String js =
             "(function() {" +
-            "  fetch('" + escapedUrl + "').then(function(res) { return res.blob(); }).then(function(blob) {" +
-            "    var reader = new FileReader();" +
-            "    reader.onloadend = function() {" +
-            "      var base64 = reader.result.split(',')[1];" +
-            "      AndroidBridge.onBlobReady(base64, blob.type || 'application/octet-stream');" +
-            "    };" +
-            "    reader.readAsDataURL(blob);" +
-            "  }).catch(function(e) { AndroidBridge.onBlobError(String(e)); });" +
+            "  var blob = window.__cobaltBlobs ? window.__cobaltBlobs['" + escapedUrl + "'] : null;" +
+            "  if (!blob) { AndroidBridge.onBlobError('blob not found in registry (already released?)'); return; }" +
+            "  var reader = new FileReader();" +
+            "  reader.onloadend = function() {" +
+            "    var base64 = reader.result.split(',')[1];" +
+            "    AndroidBridge.onBlobReady(base64, blob.type || 'application/octet-stream');" +
+            "  };" +
+            "  reader.onerror = function() { AndroidBridge.onBlobError('FileReader error'); };" +
+            "  reader.readAsDataURL(blob);" +
             "})();";
         webView.evaluateJavascript(js, null);
     }
