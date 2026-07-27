@@ -320,7 +320,7 @@ public class MainActivity extends AppCompatActivity {
             saveDownloadedBytes(id, bytes, mimeType);
         } catch (Exception e) {
             historyStore.markFailed(id);
-            Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show();
+            Snackbar.make(rootLayout, "Download failed: " + e.getMessage(), Snackbar.LENGTH_LONG).show();
         }
     }
 
@@ -361,7 +361,8 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show());
             } catch (Exception e) {
                 historyStore.markFailed(entryId);
-                runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show());
+                String detail = e.getMessage();
+                runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + detail, Snackbar.LENGTH_LONG).show());
             }
         }).start();
     }
@@ -576,7 +577,8 @@ public class MainActivity extends AppCompatActivity {
                     saveDownloadedBytes(pendingBlobId, bytes, mimeType);
                 } catch (Exception e) {
                     historyStore.markFailed(pendingBlobId);
-                    runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show());
+                    String detail = e.getMessage();
+                    runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + detail, Snackbar.LENGTH_LONG).show());
                 }
             }).start();
         }
@@ -584,7 +586,7 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onBlobError(String message) {
             historyStore.markFailed(pendingBlobId);
-            runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed", Snackbar.LENGTH_SHORT).show());
+            runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + message, Snackbar.LENGTH_LONG).show());
         }
     }
 
