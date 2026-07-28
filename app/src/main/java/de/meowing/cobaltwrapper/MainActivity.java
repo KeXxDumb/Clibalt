@@ -26,6 +26,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.splashscreen.SplashScreen;
@@ -33,7 +34,6 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewFeature;
 
-import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.android.material.snackbar.Snackbar;
 
 import java.io.File;
@@ -47,9 +47,15 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private SwipeRefreshLayout swipeRefresh;
-    private LinearProgressIndicator progressIndicator;
+    private View loadingOverlay;
+    private ImageView loadingIcon;
     private FrameLayout fullscreenContainer;
     private View rootLayout;
+
+    private boolean bouncing = false;
+    private boolean pageReady = false;
+    private float posX, posY, velX, velY;
+    private static final float BOUNCE_SPEED_DP_PER_FRAME = 4f;
 
     private HistoryStore historyStore;
     private String pendingSharedText = null;
@@ -187,7 +193,7 @@ public class MainActivity extends AppCompatActivity {
         "  try {" +
         "    if (!localStorage.getItem('settings')) {" +
         "      localStorage.setItem('settings', JSON.stringify(" +
-        "        {\"appearance\":{\"hideRemuxTab\":true,\"theme\":\"auto\"},\"schemaVersion\":6,\"save\":{\"savingMethod\":\"ask\"}}" +
+        "        {\"appearance\":{\"hideRemuxTab\":true,\"theme\":\"dark\"},\"schemaVersion\":6,\"save\":{\"savingMethod\":\"ask\"}}" +
         "      ));" +
         "    }" +
         "  } catch (e) {}" +
@@ -223,7 +229,8 @@ public class MainActivity extends AppCompatActivity {
         rootLayout = findViewById(R.id.root_layout);
         webView = findViewById(R.id.webview);
         swipeRefresh = findViewById(R.id.swipe_refresh);
-        progressIndicator = findViewById(R.id.progress_indicator);
+        loadingOverlay = findViewById(R.id.loading_overlay);
+        loadingIcon = findViewById(R.id.loading_icon);
         fullscreenContainer = findViewById(R.id.fullscreen_container);
 
         // Aplica de inmediato el último tema conocido (guardado de una sesión
@@ -233,8 +240,10 @@ public class MainActivity extends AppCompatActivity {
         applySystemBarsFromThemeState();
         rootLayout.setBackgroundColor(ThemeState.background);
         webView.setBackgroundColor(ThemeState.background);
+        loadingOverlay.setBackgroundColor(ThemeState.background);
 
         setupWebView();
+        startLoadingAnimation();
 
         swipeRefresh.setOnRefreshListener(() -> webView.reload());
 
@@ -281,20 +290,11 @@ public class MainActivity extends AppCompatActivity {
                     lastKnownFilename = null;
                     injectSharedText(pendingSharedText);
                 }
+                hideLoadingOverlay();
             }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onProgressChanged(WebView view, int newProgress) {
-                super.onProgressChanged(view, newProgress);
-                if (newProgress >= 100) {
-                    progressIndicator.setVisibility(View.GONE);
-                } else {
-                    progressIndicator.setVisibility(View.VISIBLE);
-                    progressIndicator.setProgress(newProgress);
-                }
-            }
 
             @Override
             public void onShowCustomView(View view, CustomViewCallback callback) {
@@ -822,6 +822,9 @@ public class MainActivity extends AppCompatActivity {
 
             rootLayout.setBackgroundColor(color);
             webView.setBackgroundColor(color);
+            if (loadingOverlay.getVisibility() == View.VISIBLE) {
+                loadingOverlay.setBackgroundColor(color);
+            }
         } catch (Exception ignored) { }
     }
 
@@ -855,6 +858,79 @@ public class MainActivity extends AppCompatActivity {
         int g = (int) Float.parseFloat(parts[1].trim());
         int b = (int) Float.parseFloat(parts[2].trim());
         return Color.rgb(r, g, b);
+    }
+
+    // ---------- PANTALLA DE CARGA CON ÍCONO REBOTANDO (estilo DVD) ----------
+
+    private void startLoadingAnimation() {
+        // Aparece "de la nada": crece y se desvanece hacia adentro antes de
+        // empezar a moverse.
+        loadingIcon.setScaleX(0f);
+        loadingIcon.setScaleY(0f);
+        loadingIcon.setAlpha(0f);
+        loadingIcon.animate()
+                .scaleX(1f).scaleY(1f).alpha(1f)
+                .setDuration(350)
+                .withEndAction(this::beginBounce)
+                .start();
+    }
+
+    private void beginBounce() {
+        if (pageReady) return; // ya cargó mientras aparecía el ícono
+
+        loadingOverlay.post(() -> {
+            if (pageReady) return;
+
+            float density = getResources().getDisplayMetrics().density;
+            float speed = BOUNCE_SPEED_DP_PER_FRAME * density;
+
+            posX = loadingOverlay.getWidth() / 2f - loadingIcon.getWidth() / 2f;
+            posY = loadingOverlay.getHeight() / 2f - loadingIcon.getHeight() / 2f;
+
+            double angle = Math.random() * Math.PI * 2;
+            velX = (float) Math.cos(angle) * speed;
+            velY = (float) Math.sin(angle) * speed;
+            if (Math.abs(velX) < speed * 0.4f) velX = speed * 0.4f * Math.signum(velX == 0 ? 1 : velX);
+            if (Math.abs(velY) < speed * 0.4f) velY = speed * 0.4f * Math.signum(velY == 0 ? 1 : velY);
+
+            bouncing = true;
+            loadingIcon.post(this::bounceStep);
+        });
+    }
+
+    private void bounceStep() {
+        if (!bouncing) return;
+
+        int maxX = loadingOverlay.getWidth() - loadingIcon.getWidth();
+        int maxY = loadingOverlay.getHeight() - loadingIcon.getHeight();
+
+        posX += velX;
+        posY += velY;
+
+        if (posX <= 0) { posX = 0; velX = -velX; }
+        else if (posX >= maxX) { posX = maxX; velX = -velX; }
+
+        if (posY <= 0) { posY = 0; velY = -velY; }
+        else if (posY >= maxY) { posY = maxY; velY = -velY; }
+
+        loadingIcon.setX(posX);
+        loadingIcon.setY(posY);
+
+        // postOnAnimation sincroniza con el refresco de pantalla (~60fps) y
+        // no consume nada mientras la vista no está visible/activa.
+        loadingIcon.postOnAnimation(this::bounceStep);
+    }
+
+    private void hideLoadingOverlay() {
+        if (pageReady) return; // si la página carga rápido, esto se corta solo aquí
+        pageReady = true;
+        bouncing = false;
+
+        loadingOverlay.animate()
+                .alpha(0f)
+                .setDuration(250)
+                .withEndAction(() -> loadingOverlay.setVisibility(View.GONE))
+                .start();
     }
 
     @Override

@@ -18,17 +18,23 @@
 
     </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
-    <!-- Barra de progreso delgada tipo navegador, pegada arriba -->
-    <com.google.android.material.progressindicator.LinearProgressIndicator
-        android:id="@+id/progress_indicator"
+    <!-- Pantalla de carga: mismo color que el splash nativo, con el ícono
+         rebotando estilo DVD mientras la página carga de verdad -->
+    <FrameLayout
+        android:id="@+id/loading_overlay"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top"
-        android:indeterminate="false"
-        android:visibility="gone"
-        app:indicatorColor="@color/brand_primary"
-        app:trackThickness="3dp"
-        app:trackColor="@color/page_background"/>
+        android:layout_height="match_parent"
+        android:background="@color/page_background">
+
+        <ImageView
+            android:id="@+id/loading_icon"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:layout_gravity="top|start"
+            android:src="@drawable/splash_icon"
+            android:scaleType="fitCenter"/>
+
+    </FrameLayout>
 
     <FrameLayout
         android:id="@+id/fullscreen_container"
