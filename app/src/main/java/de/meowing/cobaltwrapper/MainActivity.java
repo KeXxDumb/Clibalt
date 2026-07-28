@@ -179,6 +179,20 @@ public class MainActivity extends AppCompatActivity {
     // auto/light/dark tal cual esté configurado, o el modo del sistema si
     // cobalt está en "auto") y lo reporta a Android para sincronizar las
     // barras de estado/navegación y el propio historial.
+    // Si la app se abre por primera vez (todavía no hay nada guardado),
+    // precarga estos ajustes en vez de dejar que cobalt use los suyos por
+    // defecto. Si el usuario ya cambió algo, esto no toca nada.
+    private static final String DEFAULT_SETTINGS_JS =
+        "(function() {" +
+        "  try {" +
+        "    if (!localStorage.getItem('settings')) {" +
+        "      localStorage.setItem('settings', JSON.stringify(" +
+        "        {\"appearance\":{\"hideRemuxTab\":true,\"theme\":\"auto\"},\"schemaVersion\":6,\"save\":{\"savingMethod\":\"ask\"}}" +
+        "      ));" +
+        "    }" +
+        "  } catch (e) {}" +
+        "})();";
+
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
         "  function isTransparent(c) { return !c || c === 'rgba(0, 0, 0, 0)' || c === 'transparent'; }" +
@@ -251,6 +265,12 @@ public class MainActivity extends AppCompatActivity {
         webView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                view.evaluateJavascript(DEFAULT_SETTINGS_JS, null);
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
