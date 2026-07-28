@@ -179,10 +179,17 @@ public class MainActivity extends AppCompatActivity {
     // barras de estado/navegación y el propio historial.
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
-        "  var htmlBg = window.getComputedStyle(document.documentElement).backgroundColor;" +
-        "  var bodyBg = window.getComputedStyle(document.body).backgroundColor;" +
-        "  var transparent = htmlBg === 'rgba(0, 0, 0, 0)' || htmlBg === 'transparent' || !htmlBg;" +
-        "  var bg = transparent ? bodyBg : htmlBg;" +
+        "  function isTransparent(c) { return !c || c === 'rgba(0, 0, 0, 0)' || c === 'transparent'; }" +
+        "  var el = document.elementFromPoint(10, 10) || document.body;" +
+        "  var bg = null;" +
+        "  var guard = 0;" +
+        "  while (el && guard < 15) {" +
+        "    var c = window.getComputedStyle(el).backgroundColor;" +
+        "    if (!isTransparent(c)) { bg = c; break; }" +
+        "    el = el.parentElement;" +
+        "    guard++;" +
+        "  }" +
+        "  if (!bg) bg = window.getComputedStyle(document.body).backgroundColor;" +
         "  if (bg && bg !== window.__lastReportedBg) {" +
         "    window.__lastReportedBg = bg;" +
         "    AndroidBridge.onThemeColor(bg);" +
