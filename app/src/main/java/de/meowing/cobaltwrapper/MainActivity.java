@@ -30,6 +30,8 @@ import android.widget.FrameLayout;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.splashscreen.SplashScreen;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import androidx.webkit.WebSettingsCompat;
+import androidx.webkit.WebViewFeature;
 
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.google.android.material.snackbar.Snackbar;
@@ -237,6 +239,14 @@ public class MainActivity extends AppCompatActivity {
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setSupportMultipleWindows(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
+
+        // Sin esto, WebView nunca le informa a la página cuándo el sistema
+        // está en modo oscuro, así que cualquier CSS "prefers-color-scheme"
+        // (como el modo "auto" de cobalt) siempre ve "claro" sin importar
+        // el modo real del teléfono.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true);
+        }
 
         webView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
 
