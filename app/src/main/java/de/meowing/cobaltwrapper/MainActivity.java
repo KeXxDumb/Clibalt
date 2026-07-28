@@ -179,7 +179,10 @@ public class MainActivity extends AppCompatActivity {
     // barras de estado/navegación y el propio historial.
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
-        "  var bg = window.getComputedStyle(document.body).backgroundColor;" +
+        "  var htmlBg = window.getComputedStyle(document.documentElement).backgroundColor;" +
+        "  var bodyBg = window.getComputedStyle(document.body).backgroundColor;" +
+        "  var transparent = htmlBg === 'rgba(0, 0, 0, 0)' || htmlBg === 'transparent' || !htmlBg;" +
+        "  var bg = transparent ? bodyBg : htmlBg;" +
         "  if (bg && bg !== window.__lastReportedBg) {" +
         "    window.__lastReportedBg = bg;" +
         "    AndroidBridge.onThemeColor(bg);" +
@@ -240,8 +243,6 @@ public class MainActivity extends AppCompatActivity {
                     lastKnownLink = pendingSharedText;
                     lastKnownFilename = null;
                     injectSharedText(pendingSharedText);
-                    Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
-                    pendingSharedText = null;
                 }
             }
         });
@@ -608,10 +609,10 @@ public class MainActivity extends AppCompatActivity {
         setIntent(intent);
         String shared = extractSharedText(intent);
         if (shared != null) {
+            pendingSharedText = shared;
             lastKnownLink = shared;
             lastKnownFilename = null;
             injectSharedText(shared);
-            Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
         }
     }
 
@@ -642,6 +643,7 @@ public class MainActivity extends AppCompatActivity {
             "      el.dispatchEvent(new Event('input', { bubbles: true }));" +
             "      el.dispatchEvent(new Event('change', { bubbles: true }));" +
             "      clearInterval(timer);" +
+            "      AndroidBridge.onLinkInjected();" +
             "    }" +
             "    if (attempts > 100) clearInterval(timer);" +
             "  }, 300);" +
@@ -683,6 +685,20 @@ public class MainActivity extends AppCompatActivity {
         public void onLinkEntered(String url) {
             lastKnownLink = url;
             lastKnownFilename = null;
+        }
+
+        // Se llama cuando el enlace realmente quedó insertado en la caja de
+        // texto de cobalt. Solo mostramos el aviso y limpiamos el pendiente
+        // si de verdad veníamos de un "compartir" (evita mostrar el mensaje
+        // al reinyectar un enlace desde el historial, por ejemplo).
+        @JavascriptInterface
+        public void onLinkInjected() {
+            runOnUiThread(() -> {
+                if (pendingSharedText != null) {
+                    pendingSharedText = null;
+                    Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
+                }
+            });
         }
 
         // Nombre real que cobalt le puso al archivo (extraído de su propia
