@@ -52,6 +52,14 @@ public class MainActivity extends AppCompatActivity {
     private HistoryStore historyStore;
     private String pendingSharedText = null;
     private String lastKnownLink = null;
+    private String lastKnownFilename = null;
+
+    /** Prioriza el nombre real que cobalt le dio al archivo, luego el enlace pegado, y por último un genérico. */
+    private String bestHistoryLabel(String fallback) {
+        if (lastKnownFilename != null) return lastKnownFilename;
+        if (lastKnownLink != null) return lastKnownLink;
+        return fallback;
+    }
 
     // Id sintético de la descarga por blob que está en curso (solo una a la vez).
     private long pendingBlobId = 0;
@@ -113,6 +121,52 @@ public class MainActivity extends AppCompatActivity {
         "      return url;" +
         "    };" +
         "  }" +
+        "  function patchFetchForFilename() {" +
+        "    if (window.__fetchPatched) return;" +
+        "    window.__fetchPatched = true;" +
+        "    var origFetch = window.fetch;" +
+        "    window.fetch = function() {" +
+        "      var args = arguments;" +
+        "      return origFetch.apply(this, args).then(function(response) {" +
+        "        try {" +
+        "          var reqUrl = (args[0] && args[0].url) ? args[0].url : args[0];" +
+        "          if (typeof reqUrl === 'string' && reqUrl.indexOf('cobalt-api') !== -1) {" +
+        "            response.clone().json().then(function(data) {" +
+        "              var filename = (data && data.filename) || (data && data.output && data.output.filename);" +
+        "              if (filename) { AndroidBridge.onFilenameKnown(filename); }" +
+        "            }).catch(function() {});" +
+        "          }" +
+        "        } catch (e) {}" +
+        "        return response;" +
+        "      });" +
+        "    };" +
+        "  }" +
+        "  function patchSaveFilePicker() {" +
+        "    if (!window.showSaveFilePicker || window.__saveFPPatched) return;" +
+        "    window.__saveFPPatched = true;" +
+        "    var origPicker = window.showSaveFilePicker.bind(window);" +
+        "    window.showSaveFilePicker = function(options) {" +
+        "      return origPicker(options).then(function(handle) {" +
+        "        var name = (options && options.suggestedName) || handle.name || 'cobalt file';" +
+        "        var origCreateWritable = handle.createWritable.bind(handle);" +
+        "        handle.createWritable = function() {" +
+        "          return origCreateWritable().then(function(writable) {" +
+        "            var origClose = writable.close.bind(writable);" +
+        "            writable.close = function() {" +
+        "              return origClose().then(function(res) {" +
+        "                AndroidBridge.onNativeSaveCompleted(name);" +
+        "                return res;" +
+        "              });" +
+        "            };" +
+        "            return writable;" +
+        "          });" +
+        "        };" +
+        "        return handle;" +
+        "      });" +
+        "    };" +
+        "  }" +
+        "  patchSaveFilePicker();" +
+        "  patchFetchForFilename();" +
         "  patchBlobRegistry();" +
         "  patchVideos();" +
         "  reportThemeColor();" +
@@ -184,6 +238,7 @@ public class MainActivity extends AppCompatActivity {
                 view.evaluateJavascript(THEME_DETECT_JS + INJECTED_JS, null);
                 if (pendingSharedText != null) {
                     lastKnownLink = pendingSharedText;
+                    lastKnownFilename = null;
                     injectSharedText(pendingSharedText);
                     Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
                     pendingSharedText = null;
@@ -277,13 +332,18 @@ public class MainActivity extends AppCompatActivity {
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
 
         // DownloadManager hace una petición de red aparte, sin la sesión de
-        // la página. Si cobalt entrega enlaces atados a cookies/sesión (algo
-        // común en colas de procesamiento), sin esto la descarga es
-        // rechazada por el servidor y falla en silencio.
-        String cookie = android.webkit.CookieManager.getInstance().getCookie(url);
-        if (cookie != null) request.addRequestHeader("cookie", cookie);
+        // la página. Esto solo tiene sentido para enlaces del propio cobalt
+        // (su tunnel puede depender de sesión); para un CDN externo como
+        // video.twimg.com, mandar un Referer/cookie ajeno puede activar su
+        // protección anti-hotlink y hacer que la descarga sea rechazada.
+        String host = Uri.parse(url).getHost();
+        boolean isCobaltHost = host != null && host.contains("meowing.de");
+        if (isCobaltHost) {
+            String cookie = android.webkit.CookieManager.getInstance().getCookie(url);
+            if (cookie != null) request.addRequestHeader("cookie", cookie);
+            request.addRequestHeader("Referer", COBALT_URL);
+        }
         if (userAgent != null) request.addRequestHeader("User-Agent", userAgent);
-        request.addRequestHeader("Referer", COBALT_URL);
 
         String fileName = Uri.parse(url).getLastPathSegment();
         if (fileName == null || fileName.isEmpty()) fileName = "cobalt_download";
@@ -291,8 +351,9 @@ public class MainActivity extends AppCompatActivity {
         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
         long downloadId = dm.enqueue(request);
 
-        historyStore.startEntry(lastKnownLink != null ? lastKnownLink : fileName, downloadId);
+        historyStore.startEntry(bestHistoryLabel(fileName), downloadId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+        pollDownloadStatus(downloadId);
     }
 
     // Algunos archivos (ej. gifs generados en el momento) llegan como blob:
@@ -301,7 +362,7 @@ public class MainActivity extends AppCompatActivity {
     // propia página vía JS y se guardan manualmente.
     private void startBlobDownload(String blobUrl) {
         pendingBlobId = HistoryStore.newSyntheticId();
-        historyStore.startEntry(lastKnownLink != null ? lastKnownLink : "cobalt file", pendingBlobId);
+        historyStore.startEntry(bestHistoryLabel("cobalt file"), pendingBlobId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
 
         // No volvemos a pedir la URL por red (el archivo puede no existir en
@@ -327,7 +388,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void startDataUriDownload(String dataUri) {
         long id = HistoryStore.newSyntheticId();
-        historyStore.startEntry(lastKnownLink != null ? lastKnownLink : "cobalt file", id);
+        historyStore.startEntry(bestHistoryLabel("cobalt file"), id);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
 
         try {
@@ -394,6 +455,46 @@ public class MainActivity extends AppCompatActivity {
         if (mimeType.contains("webm")) return ".webm";
         if (mimeType.contains("mp3") || mimeType.contains("mpeg")) return ".mp3";
         return "";
+    }
+
+    /**
+     * Consulta activamente el estado de la descarga cada 2 segundos hasta
+     * que termine (bien o mal). Es un respaldo de ACTION_DOWNLOAD_COMPLETE:
+     * en varios fabricantes (MIUI y similares) ese aviso del sistema puede
+     * no llegar nunca por las restricciones agresivas de batería, dejando
+     * la entrada del historial atascada en "downloading" para siempre.
+     */
+    private void pollDownloadStatus(long downloadId) {
+        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        handler.postDelayed(new Runnable() {
+            int attempts = 0;
+
+            @Override
+            public void run() {
+                attempts++;
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                DownloadManager.Query query = new DownloadManager.Query().setFilterById(downloadId);
+                Cursor cursor = dm.query(query);
+
+                int status = -1;
+                if (cursor != null) {
+                    if (cursor.moveToFirst()) {
+                        int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                        if (statusIdx != -1) status = cursor.getInt(statusIdx);
+                    }
+                    cursor.close();
+                }
+
+                if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
+                    handleDownloadComplete(downloadId);
+                } else if (attempts < 150) { // ~5 minutos como máximo
+                    handler.postDelayed(this, 2000);
+                } else {
+                    historyStore.markFailed(downloadId);
+                    Snackbar.make(rootLayout, "Download timed out", Snackbar.LENGTH_LONG).show();
+                }
+            }
+        }, 1500);
     }
 
     private void registerDownloadCompleteReceiver() {
@@ -508,6 +609,7 @@ public class MainActivity extends AppCompatActivity {
         String shared = extractSharedText(intent);
         if (shared != null) {
             lastKnownLink = shared;
+            lastKnownFilename = null;
             injectSharedText(shared);
             Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
         }
@@ -580,6 +682,28 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onLinkEntered(String url) {
             lastKnownLink = url;
+            lastKnownFilename = null;
+        }
+
+        // Nombre real que cobalt le puso al archivo (extraído de su propia
+        // respuesta JSON), para que el historial no diga "cobalt file".
+        @JavascriptInterface
+        public void onFilenameKnown(String filename) {
+            lastKnownFilename = filename;
+        }
+
+        // Algunos archivos (videos grandes de YouTube, por ejemplo) se
+        // guardan directo con el selector nativo de Android
+        // (showSaveFilePicker), sin pasar por blob ni por DownloadManager.
+        // No manejamos nosotros el archivo, pero al menos queda registrado.
+        @JavascriptInterface
+        public void onNativeSaveCompleted(String filename) {
+            runOnUiThread(() -> {
+                long id = HistoryStore.newSyntheticId();
+                historyStore.startEntry(bestHistoryLabel(filename), id);
+                historyStore.markCompleted(id, null, null, null);
+                Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show();
+            });
         }
 
         @JavascriptInterface
