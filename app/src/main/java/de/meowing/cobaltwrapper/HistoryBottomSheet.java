@@ -88,6 +88,33 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
         updateEmptyState();
     }
 
+    @Override
+    public void onStart() {
+        super.onStart();
+        // El bottom sheet abre su propia ventana, que no hereda el color de
+        // la actividad principal — hay que aplicárselo aparte, si no la
+        // barra de navegación se queda con el color por defecto del sistema.
+        if (getDialog() != null && getDialog().getWindow() != null) {
+            android.view.Window window = getDialog().getWindow();
+            window.setNavigationBarColor(ThemeState.background);
+
+            android.view.View decor = window.getDecorView();
+            int flags = decor.getSystemUiVisibility();
+            if (!ThemeState.isDark) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                }
+            } else {
+                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                }
+            }
+            decor.setSystemUiVisibility(flags);
+        }
+    }
+
     private void applyTheme(View view) {
         view.setBackgroundColor(ThemeState.surface);
 

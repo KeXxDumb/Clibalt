@@ -26,13 +26,10 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
-import android.widget.ImageView;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.splashscreen.SplashScreen;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
-import androidx.webkit.WebSettingsCompat;
-import androidx.webkit.WebViewFeature;
 
 import com.google.android.material.snackbar.Snackbar;
 
@@ -47,17 +44,11 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private SwipeRefreshLayout swipeRefresh;
-    private View loadingOverlay;
-    private ImageView loadingIcon;
     private FrameLayout fullscreenContainer;
     private View rootLayout;
 
-    private boolean bouncing = false;
-    private boolean pageReady = false;
-    private float posX, posY, velX, velY;
-    private static final float BOUNCE_SPEED_DP_PER_FRAME = 4f;
-
     private HistoryStore historyStore;
+    private DownloadNotifier downloadNotifier;
     private String pendingSharedText = null;
     private String lastKnownLink = null;
     private String lastKnownFilename = null;
@@ -199,28 +190,6 @@ public class MainActivity extends AppCompatActivity {
         "  } catch (e) {}" +
         "})();";
 
-    // Confirma que cobalt ya "hidrató" de verdad (no solo que la red terminó
-    // de cargar), revisando que sus elementos reales ya existan. Evita que
-    // ocultemos la pantalla de carga demasiado pronto, mostrando de refilón
-    // una página a medio armar (y por eso mismo, barras del sistema con el
-    // color equivocado todavía).
-    private static final String PAGE_READY_CHECK_JS =
-        "(function() {" +
-        "  var attempts = 0;" +
-        "  var timer = setInterval(function() {" +
-        "    attempts++;" +
-        "    var input = document.querySelector('input[type=text], input:not([type]), textarea, input[type=url], input[type=search]');" +
-        "    if (input) {" +
-        "      clearInterval(timer);" +
-        "      if (window.reportThemeColor) { window.reportThemeColor(); }" +
-        "      AndroidBridge.onPageReallyReady();" +
-        "    } else if (attempts > 60) {" +
-        "      clearInterval(timer);" +
-        "      AndroidBridge.onPageReallyReady();" + // respaldo: no dejar la carga trabada para siempre
-        "    }" +
-        "  }, 100);" +
-        "})();";
-
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
         "  function isTransparent(c) { return !c || c === 'rgba(0, 0, 0, 0)' || c === 'transparent'; }" +
@@ -242,24 +211,22 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
-        splashScreen.setOnExitAnimationListener(provider -> {
-            provider.getView().animate()
-                    .alpha(0f)
-                    .setDuration(220)
-                    .withEndAction(provider::remove)
-                    .start();
-        });
+        SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
         historyStore = new HistoryStore(this);
+        downloadNotifier = new DownloadNotifier(this);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
 
         rootLayout = findViewById(R.id.root_layout);
         webView = findViewById(R.id.webview);
         swipeRefresh = findViewById(R.id.swipe_refresh);
-        loadingOverlay = findViewById(R.id.loading_overlay);
-        loadingIcon = findViewById(R.id.loading_icon);
         fullscreenContainer = findViewById(R.id.fullscreen_container);
 
         // Aplica de inmediato el último tema conocido (guardado de una sesión
@@ -269,10 +236,8 @@ public class MainActivity extends AppCompatActivity {
         applySystemBarsFromThemeState();
         rootLayout.setBackgroundColor(ThemeState.background);
         webView.setBackgroundColor(ThemeState.background);
-        loadingOverlay.setBackgroundColor(ThemeState.background);
 
         setupWebView();
-        startLoadingAnimation();
 
         swipeRefresh.setOnRefreshListener(() -> webView.reload());
 
@@ -291,14 +256,6 @@ public class MainActivity extends AppCompatActivity {
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setSupportMultipleWindows(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
-
-        // Sin esto, WebView nunca le informa a la página cuándo el sistema
-        // está en modo oscuro, así que cualquier CSS "prefers-color-scheme"
-        // (como el modo "auto" de cobalt) siempre ve "claro" sin importar
-        // el modo real del teléfono.
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, true);
-        }
 
         webView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
 
@@ -319,7 +276,6 @@ public class MainActivity extends AppCompatActivity {
                     lastKnownFilename = null;
                     injectSharedText(pendingSharedText);
                 }
-                view.evaluateJavascript(PAGE_READY_CHECK_JS, null);
             }
         });
 
@@ -396,7 +352,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void startHttpDownload(String url, String userAgent) {
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        // Ocultamos la notificación automática del sistema; mostramos la
+        // nuestra en su lugar (con progreso real y estilo consistente).
+        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN);
 
         // DownloadManager hace una petición de red aparte, sin la sesión de
         // la página. Esto solo tiene sentido para enlaces del propio cobalt
@@ -420,7 +378,12 @@ public class MainActivity extends AppCompatActivity {
 
         historyStore.startEntry(bestHistoryLabel(fileName), downloadId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+        downloadNotifier.showIndeterminate(notifIdFor(downloadId), bestHistoryLabel(fileName));
         pollDownloadStatus(downloadId);
+    }
+
+    private int notifIdFor(long id) {
+        return (int) (Math.abs(id) % Integer.MAX_VALUE);
     }
 
     // Algunos archivos (ej. gifs generados en el momento) llegan como blob:
@@ -431,6 +394,7 @@ public class MainActivity extends AppCompatActivity {
         pendingBlobId = HistoryStore.newSyntheticId();
         historyStore.startEntry(bestHistoryLabel("cobalt file"), pendingBlobId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+        downloadNotifier.showIndeterminate(notifIdFor(pendingBlobId), bestHistoryLabel("cobalt file"));
 
         // No volvemos a pedir la URL por red (el archivo puede no existir en
         // ningún servidor, como pasa con los gifs generados por
@@ -457,6 +421,7 @@ public class MainActivity extends AppCompatActivity {
         long id = HistoryStore.newSyntheticId();
         historyStore.startEntry(bestHistoryLabel("cobalt file"), id);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
+        downloadNotifier.showIndeterminate(notifIdFor(id), bestHistoryLabel("cobalt file"));
 
         try {
             String header = dataUri.substring(5, dataUri.indexOf(','));
@@ -466,6 +431,7 @@ public class MainActivity extends AppCompatActivity {
             saveDownloadedBytes(id, bytes, mimeType);
         } catch (Exception e) {
             historyStore.markFailed(id);
+            downloadNotifier.showFailed(notifIdFor(id), "Download failed");
             Snackbar.make(rootLayout, "Download failed: " + e.getMessage(), Snackbar.LENGTH_LONG).show();
         }
     }
@@ -504,9 +470,11 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 historyStore.markCompleted(entryId, thumbPath, resultUri.toString(), mimeType);
+                downloadNotifier.showCompleted(notifIdFor(entryId), bestHistoryLabel("cobalt file"));
                 runOnUiThread(() -> Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show());
             } catch (Exception e) {
                 historyStore.markFailed(entryId);
+                downloadNotifier.showFailed(notifIdFor(entryId), "Download failed");
                 String detail = e.getMessage();
                 runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + detail, Snackbar.LENGTH_LONG).show());
             }
@@ -544,10 +512,16 @@ public class MainActivity extends AppCompatActivity {
                 Cursor cursor = dm.query(query);
 
                 int status = -1;
+                long bytesDownloaded = -1;
+                long bytesTotal = -1;
                 if (cursor != null) {
                     if (cursor.moveToFirst()) {
                         int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
                         if (statusIdx != -1) status = cursor.getInt(statusIdx);
+                        int downloadedIdx = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+                        if (downloadedIdx != -1) bytesDownloaded = cursor.getLong(downloadedIdx);
+                        int totalIdx = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
+                        if (totalIdx != -1) bytesTotal = cursor.getLong(totalIdx);
                     }
                     cursor.close();
                 }
@@ -555,9 +529,14 @@ public class MainActivity extends AppCompatActivity {
                 if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
                     handleDownloadComplete(downloadId);
                 } else if (attempts < 150) { // ~5 minutos como máximo
+                    if (bytesTotal > 0) {
+                        int percent = (int) Math.min(100, (bytesDownloaded * 100) / bytesTotal);
+                        downloadNotifier.showProgress(notifIdFor(downloadId), "Downloading…", percent);
+                    }
                     handler.postDelayed(this, 2000);
                 } else {
                     historyStore.markFailed(downloadId);
+                    downloadNotifier.showFailed(notifIdFor(downloadId), "Download timed out");
                     Snackbar.make(rootLayout, "Download timed out", Snackbar.LENGTH_LONG).show();
                 }
             }
@@ -600,6 +579,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (status != DownloadManager.STATUS_SUCCESSFUL) {
                     historyStore.markFailed(downloadId);
+                    downloadNotifier.showFailed(notifIdFor(downloadId), "Download failed");
                     int finalReason = reason;
                     runOnUiThread(() -> Snackbar.make(rootLayout,
                             "Download failed (reason " + finalReason + ")", Snackbar.LENGTH_LONG).show());
@@ -611,8 +591,10 @@ public class MainActivity extends AppCompatActivity {
                 String thumbPath = generateThumbnail(downloadId, fileUri, mime);
 
                 historyStore.markCompleted(downloadId, thumbPath, fileUri != null ? fileUri.toString() : null, mime);
+                downloadNotifier.showCompleted(notifIdFor(downloadId), bestHistoryLabel("cobalt file"));
             } catch (Exception e) {
                 historyStore.markFailed(downloadId);
+                downloadNotifier.showFailed(notifIdFor(downloadId), "Download failed");
             }
         }).start();
     }
@@ -680,6 +662,46 @@ public class MainActivity extends AppCompatActivity {
             lastKnownFilename = null;
             injectSharedText(shared);
         }
+    }
+
+    private String lastClipboardPrompt = null;
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Solo tiene sentido revisar el portapapeles cuando la app se abre
+        // "normal" (tocando el ícono), no cuando ya viene con un enlace
+        // compartido de otra app.
+        if (pendingSharedText != null) return;
+        checkClipboardForLink();
+    }
+
+    private void checkClipboardForLink() {
+        try {
+            android.content.ClipboardManager clipboard =
+                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (clipboard == null || !clipboard.hasPrimaryClip()) return;
+
+            android.content.ClipData clip = clipboard.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return;
+
+            CharSequence text = clip.getItemAt(0).coerceToText(this);
+            if (text == null) return;
+            String clipText = text.toString().trim();
+
+            if (!clipText.startsWith("http")) return;
+            if (clipText.equals(lastClipboardPrompt)) return; // ya se lo preguntamos antes
+
+            lastClipboardPrompt = clipText;
+            String finalClipText = clipText;
+            Snackbar.make(rootLayout, "Paste copied link into cobalt?", Snackbar.LENGTH_LONG)
+                    .setAction("Paste", v -> {
+                        lastKnownLink = finalClipText;
+                        lastKnownFilename = null;
+                        injectSharedText(finalClipText);
+                    })
+                    .show();
+        } catch (Exception ignored) { }
     }
 
     private String extractSharedText(Intent intent) {
@@ -767,13 +789,6 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
-        // Se llama cuando cobalt ya terminó de hidratarse de verdad, no solo
-        // cuando la red terminó de cargar. Recién ahí ocultamos la pantalla
-        // de carga, para no mostrar un instante de página a medio armar.
-        @JavascriptInterface
-        public void onPageReallyReady() {
-            runOnUiThread(MainActivity.this::hideLoadingOverlay);
-        }
 
         // Nombre real que cobalt le puso al archivo (extraído de su propia
         // respuesta JSON), para que el historial no diga "cobalt file".
@@ -792,6 +807,7 @@ public class MainActivity extends AppCompatActivity {
                 long id = HistoryStore.newSyntheticId();
                 historyStore.startEntry(bestHistoryLabel(filename), id);
                 historyStore.markCompleted(id, null, null, null);
+                downloadNotifier.showCompleted(notifIdFor(id), bestHistoryLabel(filename));
                 Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show();
             });
         }
@@ -809,6 +825,7 @@ public class MainActivity extends AppCompatActivity {
                     saveDownloadedBytes(pendingBlobId, bytes, mimeType);
                 } catch (Exception e) {
                     historyStore.markFailed(pendingBlobId);
+                    downloadNotifier.showFailed(notifIdFor(pendingBlobId), "Download failed");
                     String detail = e.getMessage();
                     runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + detail, Snackbar.LENGTH_LONG).show());
                 }
@@ -818,6 +835,7 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onBlobError(String message) {
             historyStore.markFailed(pendingBlobId);
+            downloadNotifier.showFailed(notifIdFor(pendingBlobId), "Download failed");
             runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + message, Snackbar.LENGTH_LONG).show());
         }
     }
@@ -859,9 +877,6 @@ public class MainActivity extends AppCompatActivity {
 
             rootLayout.setBackgroundColor(color);
             webView.setBackgroundColor(color);
-            if (loadingOverlay.getVisibility() == View.VISIBLE) {
-                loadingOverlay.setBackgroundColor(color);
-            }
         } catch (Exception ignored) { }
     }
 
@@ -895,86 +910,6 @@ public class MainActivity extends AppCompatActivity {
         int g = (int) Float.parseFloat(parts[1].trim());
         int b = (int) Float.parseFloat(parts[2].trim());
         return Color.rgb(r, g, b);
-    }
-
-    // ---------- PANTALLA DE CARGA CON ÍCONO REBOTANDO (estilo DVD) ----------
-
-    private void startLoadingAnimation() {
-        // Aparece "de la nada": crece y se desvanece hacia adentro antes de
-        // empezar a moverse.
-        loadingIcon.setScaleX(0f);
-        loadingIcon.setScaleY(0f);
-        loadingIcon.setAlpha(0f);
-        loadingIcon.animate()
-                .scaleX(1f).scaleY(1f).alpha(1f)
-                .setDuration(350)
-                .withEndAction(this::beginBounce)
-                .start();
-    }
-
-    private void beginBounce() {
-        if (pageReady) return; // ya cargó mientras aparecía el ícono
-
-        loadingOverlay.post(() -> {
-            if (pageReady) return;
-
-            float density = getResources().getDisplayMetrics().density;
-            float speed = BOUNCE_SPEED_DP_PER_FRAME * density;
-
-            posX = loadingOverlay.getWidth() / 2f - loadingIcon.getWidth() / 2f;
-            posY = loadingOverlay.getHeight() / 2f - loadingIcon.getHeight() / 2f;
-
-            double angle = Math.random() * Math.PI * 2;
-            velX = (float) Math.cos(angle) * speed;
-            velY = (float) Math.sin(angle) * speed;
-            if (Math.abs(velX) < speed * 0.4f) velX = speed * 0.4f * Math.signum(velX == 0 ? 1 : velX);
-            if (Math.abs(velY) < speed * 0.4f) velY = speed * 0.4f * Math.signum(velY == 0 ? 1 : velY);
-
-            bouncing = true;
-            loadingIcon.post(this::bounceStep);
-        });
-    }
-
-    private void bounceStep() {
-        if (!bouncing) return;
-
-        int maxX = loadingOverlay.getWidth() - loadingIcon.getWidth();
-        int maxY = loadingOverlay.getHeight() - loadingIcon.getHeight();
-
-        posX += velX;
-        posY += velY;
-
-        if (posX <= 0) { posX = 0; velX = -velX; }
-        else if (posX >= maxX) { posX = maxX; velX = -velX; }
-
-        if (posY <= 0) { posY = 0; velY = -velY; }
-        else if (posY >= maxY) { posY = maxY; velY = -velY; }
-
-        loadingIcon.setX(posX);
-        loadingIcon.setY(posY);
-
-        // postOnAnimation sincroniza con el refresco de pantalla (~60fps) y
-        // no consume nada mientras la vista no está visible/activa.
-        loadingIcon.postOnAnimation(this::bounceStep);
-    }
-
-    private void hideLoadingOverlay() {
-        if (pageReady) return; // si la página carga rápido, esto se corta solo aquí
-        pageReady = true;
-        bouncing = false;
-
-        // Aunque el DOM ya esté listo, WebView (Chromium) puede tardar uno
-        // o dos fotogramas más en pintar de verdad la página con sus
-        // colores reales. Sin este pequeño margen, el fade deja ver por un
-        // instante el blanco por defecto de WebView antes de que alcance a
-        // componer el fotograma correcto.
-        loadingOverlay.postDelayed(() -> {
-            loadingOverlay.animate()
-                    .alpha(0f)
-                    .setDuration(250)
-                    .withEndAction(() -> loadingOverlay.setVisibility(View.GONE))
-                    .start();
-        }, 180);
     }
 
     @Override

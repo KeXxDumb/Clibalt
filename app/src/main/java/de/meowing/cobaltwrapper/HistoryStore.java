@@ -160,6 +160,6 @@ public class HistoryStore {
     }
 
     public boolean loadIsDark() {
-        return prefs().getBoolean(THEME_DARK_KEY, false);
+        return prefs().getBoolean(THEME_DARK_KEY, true);
     }
 }
