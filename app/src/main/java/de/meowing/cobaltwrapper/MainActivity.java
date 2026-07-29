@@ -233,6 +233,7 @@ public class MainActivity extends AppCompatActivity {
         // anterior) para que la pantalla de carga no "flashee" en claro si
         // cobalt estaba en oscuro.
         ThemeState.apply(historyStore.loadIsDark());
+        updateLauncherAlias(historyStore.loadIsDark());
         applySystemBarsFromThemeState();
         rootLayout.setBackgroundColor(ThemeState.background);
         webView.setBackgroundColor(ThemeState.background);
@@ -845,6 +846,34 @@ public class MainActivity extends AppCompatActivity {
     // para mantener buen contraste en cualquier tema (auto/light/dark).
     // También guarda el resultado para que el próximo arranque de la app
     // ya abra con el tema correcto desde el primer fotograma.
+    // Sabiendo qué alias (claro/oscuro) está activo ahora mismo, evitamos
+    // llamar a PackageManager en cada detección de color (que corre cada
+    // segundo) cuando en realidad no cambió nada.
+    private Boolean lastAppliedAliasIsDark = null;
+
+    private void updateLauncherAlias(boolean dark) {
+        if (lastAppliedAliasIsDark != null && lastAppliedAliasIsDark == dark) return;
+        lastAppliedAliasIsDark = dark;
+
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            android.content.ComponentName darkAlias =
+                    new android.content.ComponentName(this, "de.meowing.cobaltwrapper.LauncherDark");
+            android.content.ComponentName lightAlias =
+                    new android.content.ComponentName(this, "de.meowing.cobaltwrapper.LauncherLight");
+
+            pm.setComponentEnabledSetting(dark ? darkAlias : lightAlias,
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP);
+            pm.setComponentEnabledSetting(dark ? lightAlias : darkAlias,
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP);
+        } catch (Exception ignored) {
+            // Si esto falla por lo que sea, la app sigue funcionando igual;
+            // solo el ícono de próxima apertura no se habrá actualizado.
+        }
+    }
+
     private void applyThemeColor(String rgbColor) {
         try {
             int color = parseCssColor(rgbColor);
@@ -856,6 +885,7 @@ public class MainActivity extends AppCompatActivity {
 
             ThemeState.apply(!lightBackground);
             historyStore.saveIsDark(!lightBackground);
+            updateLauncherAlias(!lightBackground);
 
             getWindow().setStatusBarColor(color);
             getWindow().setNavigationBarColor(color);
