@@ -1,5 +1,6 @@
 <resources>
     <color name="page_background">#F4F4F4</color>
+    <color name="default_dark_bg">#000000</color>
     <color name="brand_primary">#1E88E5</color>
     <color name="brand_primary_dark">#1565C0</color>
     <color name="text_primary">#1A1A1A</color>
