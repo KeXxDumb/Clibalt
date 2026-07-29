@@ -199,6 +199,27 @@ public class MainActivity extends AppCompatActivity {
         "  } catch (e) {}" +
         "})();";
 
+    // Confirma que cobalt ya "hidrató" de verdad (no solo que la red terminó
+    // de cargar), revisando que sus elementos reales ya existan. Evita que
+    // ocultemos la pantalla de carga demasiado pronto, mostrando de refilón
+    // una página a medio armar (y por eso mismo, barras del sistema con el
+    // color equivocado todavía).
+    private static final String PAGE_READY_CHECK_JS =
+        "(function() {" +
+        "  var attempts = 0;" +
+        "  var timer = setInterval(function() {" +
+        "    attempts++;" +
+        "    var input = document.querySelector('input[type=text], input:not([type]), textarea, input[type=url], input[type=search]');" +
+        "    if (input) {" +
+        "      clearInterval(timer);" +
+        "      AndroidBridge.onPageReallyReady();" +
+        "    } else if (attempts > 60) {" +
+        "      clearInterval(timer);" +
+        "      AndroidBridge.onPageReallyReady();" + // respaldo: no dejar la carga trabada para siempre
+        "    }" +
+        "  }, 100);" +
+        "})();";
+
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
         "  function isTransparent(c) { return !c || c === 'rgba(0, 0, 0, 0)' || c === 'transparent'; }" +
@@ -220,7 +241,14 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        SplashScreen.installSplashScreen(this);
+        SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
+        splashScreen.setOnExitAnimationListener(provider -> {
+            provider.getView().animate()
+                    .alpha(0f)
+                    .setDuration(220)
+                    .withEndAction(provider::remove)
+                    .start();
+        });
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
@@ -290,7 +318,7 @@ public class MainActivity extends AppCompatActivity {
                     lastKnownFilename = null;
                     injectSharedText(pendingSharedText);
                 }
-                hideLoadingOverlay();
+                view.evaluateJavascript(PAGE_READY_CHECK_JS, null);
             }
         });
 
@@ -736,6 +764,14 @@ public class MainActivity extends AppCompatActivity {
                     Snackbar.make(rootLayout, R.string.snackbar_link_received, Snackbar.LENGTH_SHORT).show();
                 }
             });
+        }
+
+        // Se llama cuando cobalt ya terminó de hidratarse de verdad, no solo
+        // cuando la red terminó de cargar. Recién ahí ocultamos la pantalla
+        // de carga, para no mostrar un instante de página a medio armar.
+        @JavascriptInterface
+        public void onPageReallyReady() {
+            runOnUiThread(MainActivity.this::hideLoadingOverlay);
         }
 
         // Nombre real que cobalt le puso al archivo (extraído de su propia
