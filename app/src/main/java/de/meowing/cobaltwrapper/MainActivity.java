@@ -212,6 +212,7 @@ public class MainActivity extends AppCompatActivity {
         "    var input = document.querySelector('input[type=text], input:not([type]), textarea, input[type=url], input[type=search]');" +
         "    if (input) {" +
         "      clearInterval(timer);" +
+        "      if (window.reportThemeColor) { window.reportThemeColor(); }" +
         "      AndroidBridge.onPageReallyReady();" +
         "    } else if (attempts > 60) {" +
         "      clearInterval(timer);" +
@@ -962,11 +963,18 @@ public class MainActivity extends AppCompatActivity {
         pageReady = true;
         bouncing = false;
 
-        loadingOverlay.animate()
-                .alpha(0f)
-                .setDuration(250)
-                .withEndAction(() -> loadingOverlay.setVisibility(View.GONE))
-                .start();
+        // Aunque el DOM ya esté listo, WebView (Chromium) puede tardar uno
+        // o dos fotogramas más en pintar de verdad la página con sus
+        // colores reales. Sin este pequeño margen, el fade deja ver por un
+        // instante el blanco por defecto de WebView antes de que alcance a
+        // componer el fotograma correcto.
+        loadingOverlay.postDelayed(() -> {
+            loadingOverlay.animate()
+                    .alpha(0f)
+                    .setDuration(250)
+                    .withEndAction(() -> loadingOverlay.setVisibility(View.GONE))
+                    .start();
+        }, 180);
     }
 
     @Override
