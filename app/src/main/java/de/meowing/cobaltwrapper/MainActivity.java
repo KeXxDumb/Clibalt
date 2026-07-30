@@ -235,6 +235,11 @@ public class MainActivity extends AppCompatActivity {
         ThemeState.apply(historyStore.loadIsDark());
         updateLauncherAlias(historyStore.loadIsDark());
         applySystemBarsFromThemeState();
+        // La librería de splash cambia el tema de la actividad al terminar
+        // su propia transición, lo que puede pisar el color que ya
+        // pusimos. Lo reforzamos una vez más apenas se asienta ese cambio.
+        rootLayout.postDelayed(this::applySystemBarsFromThemeState, 50);
+        rootLayout.postDelayed(this::applySystemBarsFromThemeState, 300);
         rootLayout.setBackgroundColor(ThemeState.background);
         webView.setBackgroundColor(ThemeState.background);
 
