@@ -1,7 +1,6 @@
 package de.meowing.cobaltwrapper;
 
 import android.graphics.drawable.ColorDrawable;
-import android.net.Uri;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -83,7 +82,7 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
         recyclerView.setLayoutManager(new LinearLayoutManager(requireContext()));
         recyclerView.setAdapter(adapter);
 
-        view.findViewById(R.id.clear_all_button).setOnClickListener(v -> confirmClearAll(view));
+        view.findViewById(R.id.clear_all_button).setOnClickListener(v -> confirmClearAll());
 
         updateEmptyState();
     }
@@ -91,36 +90,14 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
     @Override
     public void onStart() {
         super.onStart();
-        // El bottom sheet abre su propia ventana, que no hereda el color de
-        // la actividad principal — hay que aplicárselo aparte, si no la
-        // barra de navegación se queda con el color por defecto del sistema.
         if (getDialog() != null && getDialog().getWindow() != null) {
-            android.view.Window window = getDialog().getWindow();
-            window.setNavigationBarColor(ThemeState.background);
-
-            android.view.View decor = window.getDecorView();
-            int flags = decor.getSystemUiVisibility();
-            if (!ThemeState.isDark) {
-                flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                }
-            } else {
-                flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                }
-            }
-            decor.setSystemUiVisibility(flags);
+            getDialog().getWindow().setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
+            getDialog().getWindow().setNavigationBarColor(ThemeState.background);
         }
     }
 
     private void applyTheme(View view) {
         view.setBackgroundColor(ThemeState.surface);
-
-        if (getDialog() != null && getDialog().getWindow() != null) {
-            getDialog().getWindow().setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
-        }
 
         View dragHandle = view.findViewById(R.id.drag_handle);
         if (dragHandle != null) dragHandle.setBackgroundColor(ThemeState.divider);
@@ -143,7 +120,7 @@ public class HistoryBottomSheet extends BottomSheetDialogFragment {
         if (emptySubtitle != null) emptySubtitle.setTextColor(ThemeState.textSecondary);
     }
 
-    private void confirmClearAll(View anchor) {
+    private void confirmClearAll() {
         new MaterialAlertDialogBuilder(requireContext())
                 .setTitle(R.string.history_clear_confirm_title)
                 .setMessage(R.string.history_clear_confirm_message)

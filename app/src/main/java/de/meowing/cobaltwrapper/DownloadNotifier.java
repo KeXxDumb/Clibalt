@@ -13,8 +13,7 @@ import androidx.core.app.NotificationManagerCompat;
 /**
  * Notificación propia de descarga, con progreso real, para que se vea igual
  * sin importar si el archivo viene de un enlace directo, un blob generado
- * en el navegador, o un data URI. Reemplaza la notificación automática de
- * DownloadManager (que no podemos personalizar).
+ * en el navegador, o un data URI.
  */
 public class DownloadNotifier {
 
@@ -38,42 +37,30 @@ public class DownloadNotifier {
         }
     }
 
-    /** Notificación de progreso indeterminado (no sabemos cuánto falta todavía). */
     public void showIndeterminate(int notifId, String title) {
-        NotificationCompat.Builder builder = baseBuilder(title, "Downloading…")
+        notify(notifId, baseBuilder(title, "Downloading…")
                 .setProgress(0, 0, true)
-                .setOngoing(true);
-        notify(notifId, builder);
+                .setOngoing(true));
     }
 
-    /** Notificación de progreso real, de 0 a 100. */
     public void showProgress(int notifId, String title, int percent) {
-        NotificationCompat.Builder builder = baseBuilder(title, percent + "%")
+        notify(notifId, baseBuilder(title, percent + "%")
                 .setProgress(100, percent, false)
-                .setOngoing(true);
-        notify(notifId, builder);
+                .setOngoing(true));
     }
 
     public void showCompleted(int notifId, String title) {
-        NotificationCompat.Builder builder = baseBuilder(title, "Download complete")
+        notify(notifId, baseBuilder(title, "Download complete")
                 .setProgress(0, 0, false)
                 .setOngoing(false)
-                .setAutoCancel(true);
-        notify(notifId, builder);
+                .setAutoCancel(true));
     }
 
     public void showFailed(int notifId, String title) {
-        NotificationCompat.Builder builder = baseBuilder(title, "Download failed")
+        notify(notifId, baseBuilder(title, "Download failed")
                 .setProgress(0, 0, false)
                 .setOngoing(false)
-                .setAutoCancel(true);
-        notify(notifId, builder);
-    }
-
-    public void cancel(int notifId) {
-        try {
-            NotificationManagerCompat.from(context).cancel(notifId);
-        } catch (SecurityException ignored) { }
+                .setAutoCancel(true));
     }
 
     private NotificationCompat.Builder baseBuilder(String title, String text) {
@@ -96,8 +83,8 @@ public class DownloadNotifier {
         try {
             NotificationManagerCompat.from(context).notify(notifId, builder.build());
         } catch (SecurityException ignored) {
-            // El usuario no dio permiso de notificaciones; la descarga sigue
-            // funcionando igual, solo no se muestra el aviso.
+            // Sin permiso de notificaciones; la descarga sigue funcionando,
+            // solo no se muestra el aviso.
         }
     }
 }

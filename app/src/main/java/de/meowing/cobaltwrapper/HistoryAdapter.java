@@ -68,6 +68,7 @@ public class HistoryAdapter extends RecyclerView.Adapter<HistoryAdapter.ViewHold
             holder.thumb.setPadding(0, 0, 0, 0);
             holder.thumb.setImageBitmap(BitmapFactory.decodeFile(entry.thumbPath));
             holder.thumb.setBackgroundColor(ThemeState.background);
+            holder.thumb.clearColorFilter();
         } else {
             int pad = (int) (14 * holder.itemView.getResources().getDisplayMetrics().density);
             holder.thumb.setPadding(pad, pad, pad, pad);

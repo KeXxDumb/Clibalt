@@ -1,56 +1,60 @@
-CÓMO INSTALAR ESTA VERSIÓN RECONSTRUIDA
-=========================================
+CÓMO INSTALAR ESTA RECONSTRUCCIÓN
+====================================
 
-Esta es una reescritura completa de la app, con Material Design real
-(Google), splash screen oficial, historial en bottom sheet con tarjetas,
-pull-to-refresh, barra de progreso, y manejo correcto de descargas/video.
+Esta es una reconstrucción limpia del proyecto. Se sacó todo lo que
+resultó frágil o causó crashes (el efecto DVD, el cambio dinámico de
+alias del ícono, los parches de refuerzo de color) y se dejó solo lo que
+funcionaba bien, mejor organizado.
 
-Como cambió toda la estructura interna (nuevas clases, nuevos layouts,
-nuevo tema), lo más seguro es reemplazar el contenido de tu carpeta de
-proyecto SIN perder el historial de git. Pasos en Termux:
+INSTALACIÓN (recomendado: reemplazar todo, conservando tu .git)
+------------------------------------------------------------------
+En Termux:
 
-1) Descomprime este zip en una carpeta aparte, NO directamente sobre
-   ~/CobaltWrapper (para no arriesgar el .git):
+    cd ~
+    unzip -o /sdcard/Download/CobaltWrapper.zip -d ~/temp_rebuild
+    find ~/CobaltWrapper -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+    cp -r ~/temp_rebuild/CobaltWrapper3/. ~/CobaltWrapper/
+    rm -rf ~/temp_rebuild
 
-     cd ~
-     unzip -o /sdcard/Download/CobaltWrapper.zip -d ~/temp_rebuild
+    cd ~/CobaltWrapper
+    git add .
+    git commit -m "Reconstruir la app desde cero: quitar DVD y alias de icono, dejar solo lo estable"
+    git push
 
-2) Borra el contenido viejo de la app (pero no el .git) y copia el nuevo:
+Luego, como siempre: pestaña Actions de tu repo, esperar el build, bajar
+el app-debug.apk de Artifacts.
 
-     cd ~/CobaltWrapper
-     find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-     cp -r ~/temp_rebuild/CobaltWrapper2/. ~/CobaltWrapper/
-     rm -rf ~/temp_rebuild
+IMPORTANTE: desinstala la app vieja del teléfono antes de instalar esta,
+ya que la estructura del manifest cambió (se quitaron los alias de
+lanzador que se habían agregado y luego causaron el crash en MIUI).
 
-3) Sube los cambios:
+QUÉ TIENE
+==========
+- WebView de cobalt sin barra superior, ícono personalizado
+- Splash screen oficial (androidx.core.splashscreen), fijo en oscuro
+  (sin el truco de alias dinámico que fallaba en MIUI)
+- Detección de tema en vivo (clara/oscura, según lo que cobalt muestre
+  realmente), aplicada a barra de estado/navegación y al propio historial
+- Historial/administrador de descargas unificado en un bottom sheet:
+  estados (descargando/completo/fallido), miniaturas reales, tocar para
+  abrir el archivo o reintentar, borrar individual o todo
+- Manejo robusto de descargas por los 4 mecanismos posibles (enlace
+  directo, blob en memoria, data URI, selector nativo de guardado),
+  con notificación propia de progreso real
+- Enlaces compartidos desde otras apps, con reintento de hasta 30
+  segundos por si la página tarda en cargar
+- Detección de enlace copiado al portapapeles al abrir la app manualmente
+- Ajustes de cobalt precargados en instalación nueva (tema oscuro, etc.)
+- Pull-to-refresh, manejo correcto de video en pantalla completa
 
-     git add .
-     git commit -m "Reconstruir la app con Material Design, splash screen oficial e historial en bottom sheet"
-     git push
-
-4) Ve a la pestaña Actions de tu repo, espera a que el build termine
-   (esta vez compila más dependencias nuevas -Material, RecyclerView,
-   SwipeRefreshLayout, splashscreen- así que puede tardar 2-4 minutos en
-   vez de 1).
-
-5) Descarga el app-debug.apk de ese run y desinstala la versión anterior
-   antes de instalar esta (por el cambio de tema/estructura, es más seguro
-   desinstalar primero que intentar actualizar encima).
-
-QUÉ CAMBIÓ POR DENTRO
-=======================
-- MainActivity ahora extiende AppCompatActivity (antes era Activity plano)
-- Splash screen manejado por la librería oficial androidx.core.splashscreen
-  en vez de trucos manuales con el tema
-- El historial pasó de un AlertDialog con lista de texto a un
-  BottomSheetDialogFragment con RecyclerView, tarjetas Material,
-  miniaturas con esquinas redondeadas, botón de borrar por entrada, y
-  confirmación antes de borrar todo
-- Barra de progreso de carga real (0-100%) en vez de spinner indeterminado
-- Pull-to-refresh (deslizar hacia abajo recarga la página)
-- Snackbars de confirmación para enlaces recibidos y descargas iniciadas
-- Todo el texto de la interfaz nativa está en inglés, en recursos de
-  strings.xml (más fácil de traducir a futuro si hace falta)
-- El código quedó dividido en clases separadas (HistoryStore, HistoryEntry,
-  HistoryAdapter, HistoryBottomSheet, MainActivity) en vez de un solo
-  archivo gigante
+QUÉ SE SACÓ (y por qué)
+=========================
+- El efecto DVD de la pantalla de carga: agregaba complejidad y
+  parpadeos sin arreglo fácil, y no era esencial
+- El cambio dinámico de alias del ícono (splash claro/oscuro según la
+  última detección): resultó frágil en MIUI y causó un crash
+- La detección de modo oscuro automático del sistema
+  (WebSettingsCompat/algorithmic darkening): innecesaria una vez que se
+  quitó el "auto"
+- Los parches de refuerzo de color con postDelayed: ya no hacen falta
+  con un tema estático más simple

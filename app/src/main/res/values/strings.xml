@@ -13,5 +13,4 @@
     <string name="snackbar_link_received">Link added to cobalt</string>
     <string name="snackbar_download_started">Download started</string>
     <string name="snackbar_entry_removed">Removed from history</string>
-    <string name="snackbar_undo">Undo</string>
 </resources>

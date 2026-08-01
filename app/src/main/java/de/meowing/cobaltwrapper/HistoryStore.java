@@ -15,11 +15,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Centraliza toda la lectura/escritura del historial de descargas y del
- * último tema (claro/oscuro) detectado, para no repetir manejo de JSON y
- * SharedPreferences por todos lados.
- */
 public class HistoryStore {
 
     private static final String PREFS_NAME = "cobalt_wrapper_prefs";
@@ -39,7 +34,7 @@ public class HistoryStore {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
 
-    /** Genera un id único para descargas que no vienen de DownloadManager (ej. blobs). */
+    /** Genera un id único para descargas que no vienen de DownloadManager (blobs, data URIs). */
     public static long newSyntheticId() {
         return syntheticIdCounter.getAndDecrement();
     }
@@ -64,7 +59,6 @@ public class HistoryStore {
         return result;
     }
 
-    /** Crea una entrada nueva en estado "descargando". Se llama justo cuando arranca una descarga real. */
     public void startEntry(String url, long downloadId) {
         try {
             JSONArray history = new JSONArray(prefs().getString(HISTORY_KEY, "[]"));
@@ -107,14 +101,6 @@ public class HistoryStore {
         });
     }
 
-    public void attachThumb(long downloadId, String thumbPath) {
-        updateEntry(downloadId, entry -> {
-            try {
-                entry.put("thumb", thumbPath);
-            } catch (JSONException ignored) { }
-        });
-    }
-
     private interface EntryMutator {
         void mutate(JSONObject entry);
     }
@@ -152,8 +138,6 @@ public class HistoryStore {
             for (File f : files) f.delete();
         }
     }
-
-    // ---- Tema persistido (para evitar el flash de color equivocado al abrir la app) ----
 
     public void saveIsDark(boolean isDark) {
         prefs().edit().putBoolean(THEME_DARK_KEY, isDark).apply();

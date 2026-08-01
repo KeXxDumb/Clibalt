@@ -1,12 +1,14 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-        Tema de arranque: usa la librería oficial androidx.core.splashscreen
-        para mostrar el ícono de la app sobre el color de fondo mientras carga,
-        de forma consistente en todas las versiones de Android (incluida la
-        "Splash Screen API" obligatoria desde Android 12).
+        Un solo tema de arranque, oscuro fijo. Nada de alias dinámicos ni
+        cambios de componente en tiempo de ejecución (eso causaba crashes
+        en MIUI). Si el usuario cambia cobalt a modo claro, el splash de la
+        PRÓXIMA apertura seguirá siendo oscuro por un instante hasta que el
+        código real corra y ajuste el color — es una limitación aceptada de
+        cómo funciona esta API de Android, a cambio de mucha más estabilidad.
     -->
-    <style name="Theme.CobaltWrapper.Starting.Dark" parent="Theme.SplashScreen">
+    <style name="Theme.CobaltWrapper.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/default_dark_bg</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
         <item name="postSplashScreenTheme">@style/Theme.CobaltWrapper</item>
@@ -16,27 +18,17 @@
         <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
     </style>
 
-    <style name="Theme.CobaltWrapper.Starting.Light" parent="Theme.SplashScreen">
-        <item name="windowSplashScreenBackground">@color/page_background</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
-        <item name="postSplashScreenTheme">@style/Theme.CobaltWrapper</item>
-        <item name="android:statusBarColor">@color/page_background</item>
-        <item name="android:navigationBarColor">@color/page_background</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="23">true</item>
-        <item name="android:windowLightNavigationBar" tools:targetApi="27">true</item>
-    </style>
-
-    <!-- Tema real de la app, una vez terminado el splash screen -->
     <style name="Theme.CobaltWrapper" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="colorPrimary">@color/brand_primary</item>
         <item name="colorPrimaryDark">@color/brand_primary_dark</item>
         <item name="colorAccent">@color/brand_primary</item>
         <item name="android:windowBackground">@color/default_dark_bg</item>
         <item name="android:statusBarColor">@color/default_dark_bg</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
         <item name="android:navigationBarColor">@color/default_dark_bg</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
         <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
     </style>
+
     <style name="RoundedThumbnail" parent="">
         <item name="cornerFamily">rounded</item>
         <item name="cornerSize">10dp</item>

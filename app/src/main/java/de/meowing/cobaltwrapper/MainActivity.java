@@ -1,11 +1,13 @@
 package de.meowing.cobaltwrapper;
 
+import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.app.DownloadManager;
-import android.content.ContentValues;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -15,10 +17,13 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.view.View;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -49,18 +54,12 @@ public class MainActivity extends AppCompatActivity {
 
     private HistoryStore historyStore;
     private DownloadNotifier downloadNotifier;
+
     private String pendingSharedText = null;
     private String lastKnownLink = null;
     private String lastKnownFilename = null;
+    private String lastClipboardPrompt = null;
 
-    /** Prioriza el nombre real que cobalt le dio al archivo, luego el enlace pegado, y por último un genérico. */
-    private String bestHistoryLabel(String fallback) {
-        if (lastKnownFilename != null) return lastKnownFilename;
-        if (lastKnownLink != null) return lastKnownLink;
-        return fallback;
-    }
-
-    // Id sintético de la descarga por blob que está en curso (solo una a la vez).
     private long pendingBlobId = 0;
 
     private View customView;
@@ -68,9 +67,12 @@ public class MainActivity extends AppCompatActivity {
 
     private BroadcastReceiver downloadCompleteReceiver;
 
-    // JS inyectado en cada página: agrega el botón "history" en la barra de cobalt,
-    // escucha pegados manuales en el campo de texto, limpia los controles nativos
-    // de descarga/compartir de cualquier <video>, y reporta el color de tema real.
+    // ---------- JS inyectado ----------
+
+    // Botón "history" en la barra de cobalt, escucha de pegado manual,
+    // parche de controles nativos de video, registro de blobs reales,
+    // parche de fetch (para saber el nombre real del archivo), y parche
+    // del selector nativo de guardado (para archivos grandes).
     private static final String INJECTED_JS =
         "(function() {" +
         "  function patchVideos() {" +
@@ -107,8 +109,6 @@ public class MainActivity extends AppCompatActivity {
         "      }, 50);" +
         "    });" +
         "  }" +
-        "  addHistoryButton();" +
-        "  attachPasteListener();" +
         "  function patchBlobRegistry() {" +
         "    if (window.__blobPatchInstalled) return;" +
         "    window.__blobPatchInstalled = true;" +
@@ -164,32 +164,19 @@ public class MainActivity extends AppCompatActivity {
         "      });" +
         "    };" +
         "  }" +
-        "  patchSaveFilePicker();" +
-        "  patchFetchForFilename();" +
+        "  addHistoryButton();" +
+        "  attachPasteListener();" +
         "  patchBlobRegistry();" +
+        "  patchFetchForFilename();" +
+        "  patchSaveFilePicker();" +
         "  patchVideos();" +
         "  reportThemeColor();" +
         "  setInterval(function() { addHistoryButton(); attachPasteListener(); patchVideos(); reportThemeColor(); }, 1000);" +
         "})();";
 
-    // Detecta el color de fondo real que cobalt está pintando (sigue su tema
-    // auto/light/dark tal cual esté configurado, o el modo del sistema si
-    // cobalt está en "auto") y lo reporta a Android para sincronizar las
-    // barras de estado/navegación y el propio historial.
-    // Si la app se abre por primera vez (todavía no hay nada guardado),
-    // precarga estos ajustes en vez de dejar que cobalt use los suyos por
-    // defecto. Si el usuario ya cambió algo, esto no toca nada.
-    private static final String DEFAULT_SETTINGS_JS =
-        "(function() {" +
-        "  try {" +
-        "    if (!localStorage.getItem('settings')) {" +
-        "      localStorage.setItem('settings', JSON.stringify(" +
-        "        {\"appearance\":{\"hideRemuxTab\":true,\"theme\":\"dark\"},\"schemaVersion\":6,\"save\":{\"savingMethod\":\"ask\"}}" +
-        "      ));" +
-        "    }" +
-        "  } catch (e) {}" +
-        "})();";
-
+    // Detecta el color real que cobalt está pintando subiendo por los
+    // elementos padres desde un punto visible, sin asumir que es html o
+    // body específicamente (cobalt podría usar un div de fondo aparte).
     private static final String THEME_DETECT_JS =
         "function reportThemeColor() {" +
         "  function isTransparent(c) { return !c || c === 'rgba(0, 0, 0, 0)' || c === 'transparent'; }" +
@@ -208,6 +195,19 @@ public class MainActivity extends AppCompatActivity {
         "    AndroidBridge.onThemeColor(bg);" +
         "  }" +
         "}";
+
+    // Si es instalación nueva (sin nada guardado todavía), deja precargados
+    // estos ajustes de cobalt en vez de sus valores por defecto.
+    private static final String DEFAULT_SETTINGS_JS =
+        "(function() {" +
+        "  try {" +
+        "    if (!localStorage.getItem('settings')) {" +
+        "      localStorage.setItem('settings', JSON.stringify(" +
+        "        {\"appearance\":{\"hideRemuxTab\":true,\"theme\":\"dark\"},\"schemaVersion\":6,\"save\":{\"savingMethod\":\"ask\"}}" +
+        "      ));" +
+        "    }" +
+        "  } catch (e) {}" +
+        "})();";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -229,17 +229,8 @@ public class MainActivity extends AppCompatActivity {
         swipeRefresh = findViewById(R.id.swipe_refresh);
         fullscreenContainer = findViewById(R.id.fullscreen_container);
 
-        // Aplica de inmediato el último tema conocido (guardado de una sesión
-        // anterior) para que la pantalla de carga no "flashee" en claro si
-        // cobalt estaba en oscuro.
         ThemeState.apply(historyStore.loadIsDark());
-        updateLauncherAlias(historyStore.loadIsDark());
         applySystemBarsFromThemeState();
-        // La librería de splash cambia el tema de la actividad al terminar
-        // su propia transición, lo que puede pisar el color que ya
-        // pusimos. Lo reforzamos una vez más apenas se asienta ese cambio.
-        rootLayout.postDelayed(this::applySystemBarsFromThemeState, 50);
-        rootLayout.postDelayed(this::applySystemBarsFromThemeState, 300);
         rootLayout.setBackgroundColor(ThemeState.background);
         webView.setBackgroundColor(ThemeState.background);
 
@@ -286,7 +277,6 @@ public class MainActivity extends AppCompatActivity {
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
-
             @Override
             public void onShowCustomView(View view, CustomViewCallback callback) {
                 if (customView != null) {
@@ -310,10 +300,9 @@ public class MainActivity extends AppCompatActivity {
                 webView.setVisibility(View.VISIBLE);
             }
 
-            // Intercepta cualquier intento de abrir pestaña nueva (window.open).
-            // Si la página trataba de iniciar una descarga, la enrutamos a
-            // nuestro propio gestor; nunca se abre una pestaña real ni un
-            // selector nativo de Android.
+            // Intercepta cualquier intento de abrir pestaña nueva
+            // (window.open). Si era para iniciar una descarga, la
+            // enrutamos a nuestro gestor; nunca se abre una pestaña real.
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
                 WebView probeWebView = new WebView(MainActivity.this);
@@ -333,15 +322,12 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> startDownload(url, userAgent));
+        webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) ->
+                startDownload(url, userAgent));
     }
 
-    /**
-     * Punto único de entrada para cualquier intento de descarga, sea cual sea
-     * el origen (DownloadListener o window.open interceptado). Nunca deja
-     * que una excepción tumbe la app: los esquemas no soportados por
-     * DownloadManager (blob:, data:) se manejan aparte.
-     */
+    // ---------- DESCARGAS ----------
+
     private void startDownload(String url, String userAgent) {
         try {
             if (url.startsWith("blob:")) {
@@ -358,19 +344,15 @@ public class MainActivity extends AppCompatActivity {
 
     private void startHttpDownload(String url, String userAgent) {
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-        // Ocultamos la notificación automática del sistema; mostramos la
-        // nuestra en su lugar (con progreso real y estilo consistente).
         request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_HIDDEN);
 
-        // DownloadManager hace una petición de red aparte, sin la sesión de
-        // la página. Esto solo tiene sentido para enlaces del propio cobalt
-        // (su tunnel puede depender de sesión); para un CDN externo como
-        // video.twimg.com, mandar un Referer/cookie ajeno puede activar su
-        // protección anti-hotlink y hacer que la descarga sea rechazada.
+        // Cookies/Referer solo tienen sentido para el propio dominio de
+        // cobalt (su tunnel puede depender de sesión); mandarlos a un CDN
+        // externo (twimg.com, googlevideo.com, etc.) puede activar su
+        // protección anti-hotlink y tumbar la descarga.
         String host = Uri.parse(url).getHost();
-        boolean isCobaltHost = host != null && host.contains("meowing.de");
-        if (isCobaltHost) {
-            String cookie = android.webkit.CookieManager.getInstance().getCookie(url);
+        if (host != null && host.contains("meowing.de")) {
+            String cookie = CookieManager.getInstance().getCookie(url);
             if (cookie != null) request.addRequestHeader("cookie", cookie);
             request.addRequestHeader("Referer", COBALT_URL);
         }
@@ -388,25 +370,16 @@ public class MainActivity extends AppCompatActivity {
         pollDownloadStatus(downloadId);
     }
 
-    private int notifIdFor(long id) {
-        return (int) (Math.abs(id) % Integer.MAX_VALUE);
-    }
-
-    // Algunos archivos (ej. gifs generados en el momento) llegan como blob:
-    // en vez de una URL http normal. DownloadManager no puede leerlos
-    // directamente y antes esto crasheaba la app; ahora se leen desde la
-    // propia página vía JS y se guardan manualmente.
+    // Algunos archivos (gifs generados al vuelo, videos convertidos client-side)
+    // llegan como blob: en vez de una URL http normal — el archivo solo existe
+    // en la memoria del navegador. Lo leemos del registro que instalamos con
+    // patchBlobRegistry() en vez de intentar re-pedirlo por red.
     private void startBlobDownload(String blobUrl) {
         pendingBlobId = HistoryStore.newSyntheticId();
         historyStore.startEntry(bestHistoryLabel("cobalt file"), pendingBlobId);
         Snackbar.make(rootLayout, R.string.snackbar_download_started, Snackbar.LENGTH_SHORT).show();
         downloadNotifier.showIndeterminate(notifIdFor(pendingBlobId), bestHistoryLabel("cobalt file"));
 
-        // No volvemos a pedir la URL por red (el archivo puede no existir en
-        // ningún servidor, como pasa con los gifs generados por
-        // "local-processing" de cobalt). En vez de eso, leemos el Blob real
-        // que quedó guardado en memoria cuando se creó, vía el registro que
-        // instalamos en patchBlobRegistry().
         String escapedUrl = blobUrl.replace("\\", "\\\\").replace("'", "\\'");
         String js =
             "(function() {" +
@@ -442,7 +415,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** Escribe los bytes ya descargados (blob/data URI) en la carpeta pública de Descargas. */
     private void saveDownloadedBytes(long entryId, byte[] bytes, String mimeType) {
         new Thread(() -> {
             try {
@@ -498,15 +470,15 @@ public class MainActivity extends AppCompatActivity {
         return "";
     }
 
-    /**
-     * Consulta activamente el estado de la descarga cada 2 segundos hasta
-     * que termine (bien o mal). Es un respaldo de ACTION_DOWNLOAD_COMPLETE:
-     * en varios fabricantes (MIUI y similares) ese aviso del sistema puede
-     * no llegar nunca por las restricciones agresivas de batería, dejando
-     * la entrada del historial atascada en "downloading" para siempre.
-     */
+    private int notifIdFor(long id) {
+        return (int) (Math.abs(id) % Integer.MAX_VALUE);
+    }
+
+    // Sondeo activo del estado de la descarga, como respaldo del broadcast
+    // del sistema (en varios fabricantes, MIUI entre ellos, ese aviso puede
+    // no llegar nunca por las restricciones de batería).
     private void pollDownloadStatus(long downloadId) {
-        android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+        Handler handler = new Handler(Looper.getMainLooper());
         handler.postDelayed(new Runnable() {
             int attempts = 0;
 
@@ -534,7 +506,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
                     handleDownloadComplete(downloadId);
-                } else if (attempts < 150) { // ~5 minutos como máximo
+                } else if (attempts < 150) {
                     if (bytesTotal > 0) {
                         int percent = (int) Math.min(100, (bytesDownloaded * 100) / bytesTotal);
                         downloadNotifier.showProgress(notifIdFor(downloadId), "Downloading…", percent);
@@ -594,7 +566,7 @@ public class MainActivity extends AppCompatActivity {
 
                 Uri fileUri = dm.getUriForDownloadedFile(downloadId);
                 String mime = dm.getMimeTypeForDownloadedFile(downloadId);
-                String thumbPath = generateThumbnail(downloadId, fileUri, mime);
+                String thumbPath = generateThumbnail(fileUri, mime, downloadId);
 
                 historyStore.markCompleted(downloadId, thumbPath, fileUri != null ? fileUri.toString() : null, mime);
                 downloadNotifier.showCompleted(notifIdFor(downloadId), bestHistoryLabel("cobalt file"));
@@ -605,7 +577,7 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    private String generateThumbnail(long downloadId, Uri fileUri, String mime) {
+    private String generateThumbnail(Uri fileUri, String mime, long id) {
         if (fileUri == null) return null;
         try {
             Bitmap thumb = null;
@@ -629,7 +601,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
 
-            return thumb != null ? saveThumbToDisk(thumb, downloadId) : null;
+            return thumb != null ? saveThumbToDisk(thumb, id) : null;
         } catch (Exception e) {
             return null;
         }
@@ -657,6 +629,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // ---------- ENLACES COMPARTIDOS / PORTAPAPELES ----------
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
@@ -670,25 +644,19 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String lastClipboardPrompt = null;
-
     @Override
     protected void onResume() {
         super.onResume();
-        // Solo tiene sentido revisar el portapapeles cuando la app se abre
-        // "normal" (tocando el ícono), no cuando ya viene con un enlace
-        // compartido de otra app.
         if (pendingSharedText != null) return;
         checkClipboardForLink();
     }
 
     private void checkClipboardForLink() {
         try {
-            android.content.ClipboardManager clipboard =
-                    (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard == null || !clipboard.hasPrimaryClip()) return;
 
-            android.content.ClipData clip = clipboard.getPrimaryClip();
+            ClipData clip = clipboard.getPrimaryClip();
             if (clip == null || clip.getItemCount() == 0) return;
 
             CharSequence text = clip.getItemAt(0).coerceToText(this);
@@ -696,15 +664,14 @@ public class MainActivity extends AppCompatActivity {
             String clipText = text.toString().trim();
 
             if (!clipText.startsWith("http")) return;
-            if (clipText.equals(lastClipboardPrompt)) return; // ya se lo preguntamos antes
+            if (clipText.equals(lastClipboardPrompt)) return;
 
             lastClipboardPrompt = clipText;
-            String finalClipText = clipText;
             Snackbar.make(rootLayout, "Paste copied link into cobalt?", Snackbar.LENGTH_LONG)
                     .setAction("Paste", v -> {
-                        lastKnownLink = finalClipText;
+                        lastKnownLink = clipText;
                         lastKnownFilename = null;
-                        injectSharedText(finalClipText);
+                        injectSharedText(clipText);
                     })
                     .show();
         } catch (Exception ignored) { }
@@ -720,8 +687,6 @@ public class MainActivity extends AppCompatActivity {
 
     private void injectSharedText(String text) {
         String escaped = text.replace("\\", "\\\\").replace("'", "\\'");
-        // Reintenta hasta 30 segundos por si el campo de texto de cobalt
-        // todavía no está montado (conexión lenta) en el momento del intento.
         String js =
             "(function() {" +
             "  var value = '" + escaped + "';" +
@@ -744,6 +709,14 @@ public class MainActivity extends AppCompatActivity {
             "})();";
         webView.evaluateJavascript(js, null);
     }
+
+    private String bestHistoryLabel(String fallback) {
+        if (lastKnownFilename != null) return lastKnownFilename;
+        if (lastKnownLink != null) return lastKnownLink;
+        return fallback;
+    }
+
+    // ---------- HISTORIAL ----------
 
     private void showHistorySheet() {
         HistoryBottomSheet sheet = new HistoryBottomSheet();
@@ -769,6 +742,8 @@ public class MainActivity extends AppCompatActivity {
         sheet.show(getSupportFragmentManager(), "history");
     }
 
+    // ---------- PUENTE JS <-> ANDROID ----------
+
     public class WebAppInterface {
         @JavascriptInterface
         public void openHistory() {
@@ -781,10 +756,6 @@ public class MainActivity extends AppCompatActivity {
             lastKnownFilename = null;
         }
 
-        // Se llama cuando el enlace realmente quedó insertado en la caja de
-        // texto de cobalt. Solo mostramos el aviso y limpiamos el pendiente
-        // si de verdad veníamos de un "compartir" (evita mostrar el mensaje
-        // al reinyectar un enlace desde el historial, por ejemplo).
         @JavascriptInterface
         public void onLinkInjected() {
             runOnUiThread(() -> {
@@ -795,32 +766,14 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
-
-        // Nombre real que cobalt le puso al archivo (extraído de su propia
-        // respuesta JSON), para que el historial no diga "cobalt file".
-        @JavascriptInterface
-        public void onFilenameKnown(String filename) {
-            lastKnownFilename = filename;
-        }
-
-        // Algunos archivos (videos grandes de YouTube, por ejemplo) se
-        // guardan directo con el selector nativo de Android
-        // (showSaveFilePicker), sin pasar por blob ni por DownloadManager.
-        // No manejamos nosotros el archivo, pero al menos queda registrado.
-        @JavascriptInterface
-        public void onNativeSaveCompleted(String filename) {
-            runOnUiThread(() -> {
-                long id = HistoryStore.newSyntheticId();
-                historyStore.startEntry(bestHistoryLabel(filename), id);
-                historyStore.markCompleted(id, null, null, null);
-                downloadNotifier.showCompleted(notifIdFor(id), bestHistoryLabel(filename));
-                Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show();
-            });
-        }
-
         @JavascriptInterface
         public void onThemeColor(String rgbColor) {
             runOnUiThread(() -> applyThemeColor(rgbColor));
+        }
+
+        @JavascriptInterface
+        public void onFilenameKnown(String filename) {
+            lastKnownFilename = filename;
         }
 
         @JavascriptInterface
@@ -844,40 +797,20 @@ public class MainActivity extends AppCompatActivity {
             downloadNotifier.showFailed(notifIdFor(pendingBlobId), "Download failed");
             runOnUiThread(() -> Snackbar.make(rootLayout, "Download failed: " + message, Snackbar.LENGTH_LONG).show());
         }
-    }
 
-    // Sincroniza la barra de estado y de navegación con el color real que
-    // cobalt está pintando, y ajusta el color de los íconos del sistema
-    // para mantener buen contraste en cualquier tema (auto/light/dark).
-    // También guarda el resultado para que el próximo arranque de la app
-    // ya abra con el tema correcto desde el primer fotograma.
-    // Sabiendo qué alias (claro/oscuro) está activo ahora mismo, evitamos
-    // llamar a PackageManager en cada detección de color (que corre cada
-    // segundo) cuando en realidad no cambió nada.
-    private Boolean lastAppliedAliasIsDark = null;
-
-    private void updateLauncherAlias(boolean dark) {
-        if (lastAppliedAliasIsDark != null && lastAppliedAliasIsDark == dark) return;
-        lastAppliedAliasIsDark = dark;
-
-        try {
-            android.content.pm.PackageManager pm = getPackageManager();
-            android.content.ComponentName darkAlias =
-                    new android.content.ComponentName(this, "de.meowing.cobaltwrapper.LauncherDark");
-            android.content.ComponentName lightAlias =
-                    new android.content.ComponentName(this, "de.meowing.cobaltwrapper.LauncherLight");
-
-            pm.setComponentEnabledSetting(dark ? darkAlias : lightAlias,
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
-                    android.content.pm.PackageManager.DONT_KILL_APP);
-            pm.setComponentEnabledSetting(dark ? lightAlias : darkAlias,
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                    android.content.pm.PackageManager.DONT_KILL_APP);
-        } catch (Exception ignored) {
-            // Si esto falla por lo que sea, la app sigue funcionando igual;
-            // solo el ícono de próxima apertura no se habrá actualizado.
+        @JavascriptInterface
+        public void onNativeSaveCompleted(String filename) {
+            runOnUiThread(() -> {
+                long id = HistoryStore.newSyntheticId();
+                historyStore.startEntry(bestHistoryLabel(filename), id);
+                historyStore.markCompleted(id, null, null, null);
+                downloadNotifier.showCompleted(notifIdFor(id), bestHistoryLabel(filename));
+                Snackbar.make(rootLayout, "Download complete", Snackbar.LENGTH_SHORT).show();
+            });
         }
     }
+
+    // ---------- TEMA ----------
 
     private void applyThemeColor(String rgbColor) {
         try {
@@ -890,7 +823,6 @@ public class MainActivity extends AppCompatActivity {
 
             ThemeState.apply(!lightBackground);
             historyStore.saveIsDark(!lightBackground);
-            updateLauncherAlias(!lightBackground);
 
             getWindow().setStatusBarColor(color);
             getWindow().setNavigationBarColor(color);
@@ -915,7 +847,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) { }
     }
 
-    /** Reaplica el color de barras cacheado (usado al arrancar, antes de que la página reporte el real). */
     private void applySystemBarsFromThemeState() {
         getWindow().setStatusBarColor(ThemeState.background);
         getWindow().setNavigationBarColor(ThemeState.background);
@@ -936,8 +867,6 @@ public class MainActivity extends AppCompatActivity {
         decor.setSystemUiVisibility(flags);
     }
 
-    // Convierte "rgb(20, 20, 20)" o "rgba(20, 20, 20, 1)" (lo que devuelve
-    // getComputedStyle) en un color de Android.
     private int parseCssColor(String rgb) {
         String nums = rgb.substring(rgb.indexOf('(') + 1, rgb.indexOf(')'));
         String[] parts = nums.split(",");

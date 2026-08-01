@@ -1,10 +1,9 @@
 package de.meowing.cobaltwrapper;
 
 /**
- * Guarda en memoria la última paleta detectada del tema real de cobalt
- * (claro u oscuro), para que tanto la actividad principal como el bottom
- * sheet de historial puedan pintarse acorde sin depender del modo del
- * sistema operativo.
+ * Paleta de colores según el tema real que cobalt está mostrando. Se
+ * actualiza en memoria; no toca nada a nivel de sistema (nada de alias de
+ * lanzador ni PackageManager, eso resultó frágil en algunos fabricantes).
  */
 public class ThemeState {
     public static boolean isDark = true;
