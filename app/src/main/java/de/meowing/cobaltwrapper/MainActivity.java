@@ -231,6 +231,15 @@ public class MainActivity extends AppCompatActivity {
 
         ThemeState.apply(historyStore.loadIsDark());
         applySystemBarsFromThemeState();
+        // En MIUI (y algunos otros fabricantes), el color de barras
+        // declarado en el tema no siempre se respeta apenas termina la
+        // transición del splash — a veces el sistema lo resetea a blanco
+        // por un momento y lo corrige solo unos segundos después. Lo
+        // reforzamos varias veces durante ese margen para no depender de
+        // que el sistema lo haga bien por su cuenta.
+        for (long delay : new long[]{100, 500, 1000, 2000, 3500}) {
+            rootLayout.postDelayed(this::applySystemBarsFromThemeState, delay);
+        }
         rootLayout.setBackgroundColor(ThemeState.background);
         webView.setBackgroundColor(ThemeState.background);
 
